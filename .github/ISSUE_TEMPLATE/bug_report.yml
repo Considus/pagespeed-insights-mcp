@@ -1,0 +1,59 @@
+name: Bug report
+description: Something does not work the way the README says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please run `diagnose` (the MCP tool) or
+        `python3 -m pagespeed_insights --runs 1 <a url>` and paste what it says.
+        It reports whether the key works and whether the Chrome UX Report is
+        reachable, which separates a configuration problem from a real bug.
+
+        **Never paste your API key.** `diagnose` deliberately does not print it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, and what came back.
+      placeholder: |
+        I ran: ...
+        I expected: ...
+        I got: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: Output of `diagnose`
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: face
+    attributes:
+      label: Which face
+      options:
+        - The MCP server (through an assistant)
+        - The command line
+        - setup.py
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: If through an assistant, which one
+      placeholder: Claude Desktop, Cursor, Zed, Codex CLI...
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and Python version
+      placeholder: macOS 15.4, Python 3.12.2 (`python3 --version`)
+    validations:
+      required: true
