@@ -206,9 +206,23 @@ class Config(unittest.TestCase):
         os.environ['PAGESPEED_API_KEY'] = 'from-env'
         self.assertEqual(config.api_key('explicit'), 'explicit')
 
+    @unittest.skipIf(os.name == 'nt',
+                     'Windows has no POSIX file modes. os.open ignores the mode '
+                     'argument and the file reports 0666, so protection comes '
+                     'from the profile directory ACL instead. Asserting 0600 '
+                     'here would be asserting a guarantee the platform does not '
+                     'make.')
     def test_settings_are_written_owner_only(self):
         path = config.save({'api_key': 'x', 'urls': []})
         self.assertEqual(pathlib.Path(path).stat().st_mode & 0o777, 0o600)
+
+    def test_settings_land_in_the_configured_directory(self):
+        """The cross-platform half of the guarantee. Wherever the key ends up,
+        it must be inside the directory we chose and not somewhere incidental
+        like the working directory or the repo."""
+        path = pathlib.Path(config.save({'api_key': 'x', 'urls': []})).resolve()
+        self.assertEqual(path.parent, pathlib.Path(self._dir).resolve())
+        self.assertTrue(path.is_file())
 
     def test_a_corrupt_settings_file_does_not_crash_the_tool(self):
         config.settings_path().write_text('{ this is not json')

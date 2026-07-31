@@ -197,11 +197,18 @@ because Google was busy.
 ## Where things live
 
 Your key and your saved URLs go in `settings.json` in your platform's config
-directory, readable only by you.
+directory.
 
 - macOS, `~/Library/Application Support/pagespeed-insights-mcp/`
 - Linux, `~/.config/pagespeed-insights-mcp/`
 - Windows, `%APPDATA%\pagespeed-insights-mcp\`
+
+On macOS and Linux that file is written owner-readable only. On Windows it is
+not, because Windows has no POSIX file modes and the request is quietly
+ignored. There the protection comes from `%APPDATA%` living inside your user
+profile, which is restricted to you by default. That is a real protection, but
+it is inherited rather than set by this tool, so it is worth knowing which one
+you are relying on.
 
 `PAGESPEED_CONFIG_DIR` moves that wherever you like, and `PAGESPEED_API_KEY`
 overrides the stored key for anyone who would rather keep it in their own secret
