@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Considus/pagespeed-insights-mcp/security/advisories/new
+    about: Please report anything exploitable privately, not as a public issue.
+  - name: Getting a key, or "my key does not work"
+    url: https://github.com/Considus/pagespeed-insights-mcp#readme
+    about: The README walks through the Google Cloud console step by step, including the one step almost everyone gets wrong. Try `diagnose` first.

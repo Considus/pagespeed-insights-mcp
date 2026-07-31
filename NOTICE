@@ -1,0 +1,14 @@
+PageSpeed Insights MCP
+Copyright 2026 Considus
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+Unofficial community project. Not affiliated with, endorsed by, or sponsored by
+Google LLC. "Google", "PageSpeed Insights", "Lighthouse", "Chrome", "Chrome UX
+Report" and "Google Cloud" are trademarks of Google LLC, referred to here only
+to describe the APIs this software works with and how to obtain a key for them.
+
+This project calls two public Google APIs, the PageSpeed Insights API and the
+Chrome UX Report API. It bundles no Google code and redistributes no Google
+data. Measurements are fetched at the time you ask for them, on your own API
+key, under Google's terms for those APIs.

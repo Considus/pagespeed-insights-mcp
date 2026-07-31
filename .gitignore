@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.env
+*.bak
+*.bak.*
+.DS_Store
+
+# Never. The API key lives in the user's config directory, but a stray copy
+# here is one `git add -A` from being published.
+settings.json
+*api-key*
+*.json.key
+
+# Internal. SCOPE.md is the decision record for this project and records our
+# own migration off check-pagespeed.py. It sits beside the code because that is
+# where it is useful, and it must never ship — a public repo publishes every
+# file in it.
+SCOPE.md

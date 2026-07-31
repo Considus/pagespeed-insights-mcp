@@ -1,0 +1,33 @@
+name: Feature request
+description: Something it should do and does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things this project holds to, so it is worth knowing them before
+        you write:
+
+        **It stays standard-library only.** No pip, no virtual environment, no
+        compiled dependency. That is what makes it installable by people who do
+        not use a terminal, and it is not up for trade.
+
+        **It does not report a number without its uncertainty.** Anything that
+        would present a single run as a measurement, or merge lab and field
+        data into one figure, is out of scope by design rather than by
+        oversight.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to find out about a site?
+      description: The question you want answered, rather than the feature. It often turns out there is a better way to answer it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you had in mind
+    validations:
+      required: false
