@@ -77,7 +77,16 @@ def save(values):
 
     Written to a temp file in the same directory and renamed, so a crash or a
     full disk leaves the previous settings intact rather than a half-file that
-    parses as empty and looks like the user was never set up."""
+    parses as empty and looks like the user was never set up.
+
+    WINDOWS. The 0600 is a no-op there. Windows has no POSIX file modes, so the
+    mode argument is ignored and the file reports 0666. Protection instead comes
+    from the directory it lives in: %APPDATA% sits inside the user's profile,
+    which is ACL'd to that user by default. That is a real protection and a
+    weaker promise than the one POSIX gives, because it is inherited rather than
+    set, and a user who has loosened their profile ACLs does not get it. Said
+    plainly in the README rather than papered over, and tested for what each
+    platform actually guarantees rather than asserted uniformly."""
     path = settings_path()
     tmp = path.with_suffix('.tmp')
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
