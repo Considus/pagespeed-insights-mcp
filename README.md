@@ -175,11 +175,28 @@ problem from a slow page in about 2 seconds.
 
 ## From a terminal
 
+From the folder you cloned into it runs as a module, `python3 -m
+pagespeed_insights`. For a `pagespeed` command that works from anywhere, link
+the launcher onto your PATH.
+
 ```bash
-python3 -m pagespeed_insights https://example.com/
-python3 -m pagespeed_insights --runs 3 --strategy both https://example.com/
-python3 -m pagespeed_insights --field --history https://example.com/
-python3 -m pagespeed_insights --json https://example.com/
+mkdir -p ~/.local/bin
+ln -s "$PWD/pagespeed" ~/.local/bin/pagespeed
+```
+
+If `~/.local/bin` is not on your PATH, add `export PATH="$HOME/.local/bin:$PATH"`
+to your shell profile. On Windows there is no symlink step, add the folder to
+your PATH or keep using `python -m pagespeed_insights` from inside it.
+
+Setup will show you that command but will not run it. It writes nothing outside
+its own settings, and a tool that quietly drops executables into a PATH
+directory is the thing that rule exists to prevent.
+
+```bash
+pagespeed https://example.com/
+pagespeed --runs 3 --strategy both https://example.com/
+pagespeed --field --history https://example.com/
+pagespeed --json https://example.com/
 ```
 
 With no URL it uses whatever you saved during setup.
