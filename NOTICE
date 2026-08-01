@@ -12,3 +12,7 @@ This project calls two public Google APIs, the PageSpeed Insights API and the
 Chrome UX Report API. It bundles no Google code and redistributes no Google
 data. Measurements are fetched at the time you ask for them, on your own API
 key, under Google's terms for those APIs.
+
+The typefaces in assets/fonts are licensed separately under the SIL Open Font
+License 1.1, whose terms and required copyright notices are in
+assets/fonts/OFL.txt. That file must travel with the font files.
