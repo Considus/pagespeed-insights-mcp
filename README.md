@@ -226,7 +226,14 @@ directory.
 - Linux, `~/.config/pagespeed-insights-mcp/`
 - Windows, `%APPDATA%\pagespeed-insights-mcp\`
 
-On macOS and Linux that file is written owner-readable only. On Windows it is
+To add, change or remove those saved URLs, run `python3 setup.py` again from the
+folder you cloned into. The box comes back with whatever you saved last time, so
+edit the list and submit it. Empty it and you are back to naming a site every
+time. Your key is kept unless you type a new one over it. There is no CLI flag
+for this. The file is small and plain, so editing it by hand works just as well,
+and deleting it removes the key from the machine.
+
+On macOS and Linux `settings.json` is written owner-readable only. On Windows it is
 not, because Windows has no POSIX file modes and the request is quietly
 ignored. There the protection comes from `%APPDATA%` living inside your user
 profile, which is restricted to you by default. That is a real protection, but

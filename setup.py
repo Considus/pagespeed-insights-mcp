@@ -134,30 +134,157 @@ def verify(key):
 # ---------------------------------------------------------------------------
 # The prompt that installs the server
 # ---------------------------------------------------------------------------
-def cli_install():
-    """The command that puts `pagespeed` on PATH, and a warning if it will not
-    land anywhere useful.
+def path_note():
+    """Whether the last line of the POSIX blocks is needed on this machine.
 
-    Setup does not run this. It writes nothing outside its own config directory,
-    which SECURITY.md makes a rule rather than a habit, and a tool that silently
-    drops executables into a PATH directory is exactly the behaviour that rule
-    exists to forbid. Same reasoning as never editing an assistant's config.
+    Setup does not run any of it. It writes nothing outside its own config
+    directory, which SECURITY.md makes a rule rather than a habit, and a tool
+    that silently drops executables into a PATH directory is exactly the
+    behaviour that rule exists to forbid. Same reasoning as never editing an
+    assistant's config. So the commands are shown and the reader runs them.
+
+    The check is worth making because the alternative is telling everyone to
+    append an export line, including the people who already have one, and a
+    duplicated PATH entry is a confusing thing to find later.
     """
-    launcher = os.path.join(HERE, 'pagespeed')
     if os.name == 'nt':
-        return ('<pre>%s</pre><p class="help">On Windows, add the folder above to '
-                'your PATH, or keep using <code>python -m pagespeed_insights</code> '
-                'from inside it.</p>' % html.escape(HERE))
-
+        return ('<p class="help">Neither block above applies to Windows and there is '
+                'nothing here to install. The launcher they set up needs a symlink, '
+                'which wants Developer Mode or an elevated shell, so on Windows you '
+                'run it from the folder it is already in, which is what the Windows '
+                'block below does.</p>')
     target = os.path.expanduser('~/.local/bin')
-    on_path = target in (os.environ.get('PATH') or '').split(os.pathsep)
-    note = '' if on_path else (
-        '<p class="help"><code>~/.local/bin</code> is not on your PATH, so the '
-        'command will not be found until you add it. Put '
-        '<code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile, '
-        'or link it into a directory that is already on PATH.</p>')
-    return ('<pre>mkdir -p %s\nln -s %s %s/pagespeed</pre>%s'
-            % (html.escape(target), html.escape(launcher), html.escape(target), note))
+    common = ('The first two lines put a <code>pagespeed</code> command into a folder. '
+              'The <code>echo</code> line tells your terminal to look in that folder, ')
+    # "your terminal" already anchors this to the reader's own machine, and the
+    # block above is headed "— this machine". Saying it a third time in two
+    # lines was noise.
+    if target in (os.environ.get('PATH') or '').split(os.pathsep):
+        return (f'<p class="help">{common}which it already does, so you can leave that '
+                f'line out. The two above it are the ones that matter.</p>')
+    return (f'<p class="help">{common}which it does not do yet, so that is the line '
+            f'that makes the command work. It only applies to terminal windows you '
+            f'open afterwards, so open a fresh one before deciding it did not '
+            f'work.</p>')
+
+
+def rerun_blocks():
+    """Running setup again, in the two forms it actually takes.
+
+    NO `cd`. setup.py resolves everything from its own __file__ and the settings
+    live in the platform config directory, so the working directory never
+    mattered. Dropping it removes a line and a real trap: in cmd.exe, `cd` to a
+    path on another drive silently does nothing, leaving the next line to run in
+    the wrong place.
+
+    BOTH PATHS QUOTED. sys.executable on Windows is routinely under
+    `C:\\Program Files`, and an unquoted path stops at the space.
+
+    THE POWERSHELL `&`. Once the command itself is quoted, PowerShell needs the
+    call operator, because a statement that begins with a quoted string is an
+    expression and it prints the path instead of running it. Nothing errors,
+    which is what makes it worth its own block rather than a footnote.
+    """
+    windows = os.name == 'nt'
+    sep = '\\' if windows else '/'
+
+    def cmd(for_windows):
+        if for_windows == windows:                 # this machine, real paths
+            script = html.escape(HERE + sep + 'setup.py')
+            exe = html.escape(sys.executable)
+            return f'&amp; "{exe}" "{script}"' if windows else f'"{exe}" "{script}"'
+        # Another machine, so neither path is knowable. An interpreter taken
+        # from PATH needs no quoting and therefore no call operator.
+        if for_windows:
+            return 'python "path\\to\\pagespeed-insights-mcp\\setup.py"'
+        return 'python3 "path/to/pagespeed-insights-mcp/setup.py"'
+
+    # _block owns the "(this machine)" marker. Kept in one place because this
+    # function having its own copy is exactly how the two drifted apart.
+    return (_block(('darwin', 'linux'), 'macOS and Linux', 'Terminal (zsh or bash)',
+                   cmd(False))
+            + _block(('nt',), 'Windows', 'PowerShell', cmd(True)))
+
+
+def _this_os():
+    return 'darwin' if sys.platform == 'darwin' else ('nt' if os.name == 'nt' else 'linux')
+
+
+def _folder(key):
+    """The real path for the machine you are on, a placeholder for the others.
+
+    A block headed Windows that says cd "/Users/someone" is worse than no
+    example, and the other blocks are by definition about a different computer,
+    where this path does not exist anyway.
+    """
+    if key == _this_os():
+        return html.escape(HERE)
+    return ('path\\to\\pagespeed-insights-mcp' if key == 'nt'
+            else 'path/to/pagespeed-insights-mcp')
+
+
+def _block(keys, heading, shell, body):
+    """One shell block. `keys` is every platform it covers, so the marker still
+    appears when macOS and Linux share a block."""
+    mark = ' (this machine)' if _this_os() in keys else ''
+    return (f'<div class="shell"><h3>{heading}{mark}</h3>'
+            f'<div class="blocklabel">Run in {shell}</div>'
+            f'<pre class="term">{body}</pre></div>')
+
+
+def install_blocks():
+    """Setting the command up, once, and nothing else.
+
+    Kept apart from the usage examples because they are different kinds of
+    thing: this is run once and never again, those are run whenever you want a
+    measurement. Stacked in one block with a blank line between them, there was
+    no line that was unambiguously the last one, which made the note underneath
+    impossible to write without pointing at the wrong command.
+
+    Only macOS and Linux appear. Windows has nothing to install — the symlink
+    needs Developer Mode or an elevated shell — and saying so in the note below
+    is more honest than inventing a block to keep the set symmetrical.
+    """
+    def posix(key, profile):
+        # ~ rather than the expanded home directory, so the line stays true on
+        # whichever machine it is eventually pasted into.
+        return (f'mkdir -p ~/.local/bin\n'
+                f'ln -s {_folder(key)}/pagespeed ~/.local/bin/pagespeed\n'
+                f'echo \'export PATH="$HOME/.local/bin:$PATH"\' &gt;&gt; {profile}')
+
+    return (_block(('darwin',), 'macOS', 'Terminal (zsh)', posix('darwin', '~/.zshrc'))
+            + _block(('linux',), 'Linux', 'your terminal (bash)', posix('linux', '~/.bashrc')))
+
+
+def usage_blocks():
+    """Running it, which is two blocks rather than three.
+
+    macOS and Linux are identical here — no profile file is involved, so
+    splitting them would be inventing a difference to fill a heading. Windows
+    differs for real: no launcher on PATH, so the module is called from the
+    folder. Each line runs on its own, because stock PowerShell does not
+    understand && between commands.
+    """
+    return (_block(('darwin', 'linux'), 'macOS and Linux', 'Terminal (zsh or bash)',
+                   'pagespeed https://example.com\n'
+                   'pagespeed --field --history https://example.com\n'
+                   'pagespeed --json https://example.com')
+            + _block(('nt',), 'Windows', 'PowerShell',
+                     f'cd "{_folder("nt")}"\n'
+                     f'python -m pagespeed_insights https://example.com\n'
+                     f'python -m pagespeed_insights --field --history https://example.com\n'
+                     f'python -m pagespeed_insights --json https://example.com'))
+
+
+# The point of these is that there is no command to learn and nothing to
+# remember. They are what you would have said anyway, which is the whole
+# argument for the thing being an MCP server rather than a CLI.
+EXAMPLE_PROMPTS = """Check the PageSpeed of https://example.com
+How did https://example.com score on mobile and desktop?
+Check my saved sites and tell me if anything has regressed
+What did real Chrome users experience on https://example.com?
+Has https://example.com got slower for real people over the last six months?
+Is my PageSpeed setup working?"""
 
 
 def install_prompt():
@@ -166,7 +293,7 @@ def install_prompt():
 the MCP client you are running inside.
 
 Server details (the command and args values are JSON strings, quoted and escaped
-exactly as a JSON config needs them — copy them as they are):
+exactly as a JSON config needs them - copy them as they are):
   name    = "pagespeed-insights"
   command = %s
   args    = [%s]
@@ -251,6 +378,18 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
 pre{overflow-x:auto;white-space:pre-wrap;background:var(--bg);border:1px solid var(--edge);
     border-radius:11px;padding:18px;font-size:0.82rem;line-height:1.6;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+/* Two kinds of block on this page and they are not interchangeable: one gets
+   pasted into a chat window, one gets typed at a shell. Identical styling was
+   leaving the reader to work out which from the content, so each carries a
+   label and its own left edge. */
+.blocklabel{font-size:0.68rem;font-weight:500;letter-spacing:.12em;text-transform:uppercase;
+            color:var(--muted);margin:22px 0 7px}
+pre.paste{border-left:3px solid var(--accent)}
+pre.term{border-left:3px solid var(--muted)}
+.shell{margin:20px 0 0}
+.shell h3{font-family:var(--sans);font-weight:500;font-size:0.85rem;letter-spacing:.04em;
+          color:var(--text);margin:0 0 6px}
+.shell .blocklabel{margin-top:0}
 ol{padding-left:20px;color:var(--muted);font-size:0.9rem;max-width:74ch}
 ol li{margin:9px 0}
 ul{padding-left:20px;color:var(--muted);font-size:0.9rem}
@@ -427,18 +566,55 @@ def done_page(urls, crux_state):
 <p class="help">Paste this into whichever assistant you want measuring your pages,
    Claude, Cursor, Windsurf, Zed, Codex CLI, VS Code, anything that speaks MCP.
    It carries no key.</p>
-<pre>{html.escape(install_prompt())}</pre>
-<p class="help">Restart the app afterwards. MCP servers load at startup.</p>
+<div class="blocklabel">Paste into your assistant</div>
+<pre class="paste">{html.escape(install_prompt())}</pre>
+<p class="help">Restart the app afterwards. MCP servers load at startup, so until
+   you do, the assistant has no idea it gained anything.</p>
+
+<h2 class="sub">Then just ask</h2>
+<p class="help">There is no command and nothing to remember. Once the server is
+   registered your assistant has three tools and picks between them from what you
+   asked for, so ask in the words you would have used anyway.</p>
+<div class="blocklabel">Example prompts</div>
+<pre class="paste">{html.escape(EXAMPLE_PROMPTS)}</pre>
+<ul>
+  <li><b>Lab measurements</b> are the default. Google runs the page on its own
+      hardware, so the result is repeatable and comparable, and it is a
+      simulation rather than anyone's actual visit.</li>
+  <li><b>Real-user data</b> comes from the Chrome UX Report, which is what
+      actually happened to people on your site and the only part Google ranks
+      on. Ask for real users, or for how something has moved over months, and
+      that is what it reaches for.</li>
+  <li><b>Something not working</b> gets you the diagnosis instead: whether the
+      key is present, whether Google is answering, whether real-user data is
+      permitted. Useful for telling a broken setup apart from a slow page.</li>
+</ul>
+<p class="help">A check takes a few minutes. It is the median of several runs
+   rather than one, because a single run disagrees with itself enough to invent
+   a regression that was never there.</p>
+
+<h2 class="sub">Changing your saved sites</h2>
+<p class="help">The sites above are the default when you do not name one. To add,
+   change or remove them, run setup again. The box comes back with what you saved
+   already, so edit the list and submit, and empty it entirely to go back to
+   naming a site every time. Your key is kept unless you type a new one over it.</p>
+{rerun_blocks()}
+<p class="help">Both live in <code>{html.escape(str(config.settings_path()))}</code>,
+   which you can also edit by hand or delete outright. Deleting it removes the key
+   from this machine.</p>
 
 <h2 class="sub">Or use it from a terminal</h2>
 <p class="help">It already works from the folder you installed it in, as
    <code>python3 -m pagespeed_insights</code>. For a <code>pagespeed</code> command
    that works from anywhere, link the launcher onto your PATH. Run this yourself,
    setup does not install anything outside its own settings.</p>
-{cli_install()}
-<pre>pagespeed https://example.com
-pagespeed --field --history https://example.com
-pagespeed --json https://example.com</pre>
+{install_blocks()}
+{path_note()}
+
+<h2 class="sub">Then run it</h2>
+<p class="help">Once, above. From then on, these. Same three tools your assistant
+   has, with the measurement printed to the terminal instead.</p>
+{usage_blocks()}
 
 <p class="help">You can close this tab. Setup has already shut down.</p>
 """, 'Considus · PageSpeed Insights, set up')
