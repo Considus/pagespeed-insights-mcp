@@ -134,6 +134,32 @@ def verify(key):
 # ---------------------------------------------------------------------------
 # The prompt that installs the server
 # ---------------------------------------------------------------------------
+def cli_install():
+    """The command that puts `pagespeed` on PATH, and a warning if it will not
+    land anywhere useful.
+
+    Setup does not run this. It writes nothing outside its own config directory,
+    which SECURITY.md makes a rule rather than a habit, and a tool that silently
+    drops executables into a PATH directory is exactly the behaviour that rule
+    exists to forbid. Same reasoning as never editing an assistant's config.
+    """
+    launcher = os.path.join(HERE, 'pagespeed')
+    if os.name == 'nt':
+        return ('<pre>%s</pre><p class="help">On Windows, add the folder above to '
+                'your PATH, or keep using <code>python -m pagespeed_insights</code> '
+                'from inside it.</p>' % html.escape(HERE))
+
+    target = os.path.expanduser('~/.local/bin')
+    on_path = target in (os.environ.get('PATH') or '').split(os.pathsep)
+    note = '' if on_path else (
+        '<p class="help"><code>~/.local/bin</code> is not on your PATH, so the '
+        'command will not be found until you add it. Put '
+        '<code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell profile, '
+        'or link it into a directory that is already on PATH.</p>')
+    return ('<pre>mkdir -p %s\nln -s %s %s/pagespeed</pre>%s'
+            % (html.escape(target), html.escape(launcher), html.escape(target), note))
+
+
 def install_prompt():
     """Self-contained, carries no secret, works with any assistant."""
     return """I have a local MCP server on this computer and I'd like you to register it with \
@@ -344,6 +370,25 @@ def form_page(error='', existing=None, token=TOKEN):
   <button type="submit">Check the key and save</button>
   <p class="help">This makes two real calls to Google, so it takes a few seconds.</p>
 </form>
+<!-- Submitting verifies the key against Google before saving, which is two real
+     network round trips and several seconds of nothing. Without this the page
+     looks dead, and the natural response is to click again and set a second
+     verification going. Progressive enhancement: with no JS the form submits
+     exactly as before, just without the reassurance. -->
+<script>
+(function () {{
+  var form = document.querySelector('form');
+  if (!form) return;
+  form.addEventListener('submit', function () {{
+    var button = form.querySelector('button');
+    if (!button) return;
+    button.textContent = 'Checking with Google\\u2026';
+    // Disabled AFTER the submit event has been dispatched, so the submission
+    // itself is never cancelled by a disabled control.
+    setTimeout(function () {{ button.disabled = true; }}, 0);
+  }});
+}})();
+</script>
 {CONSOLE_STEPS}
 """)
 
@@ -386,8 +431,14 @@ def done_page(urls, crux_state):
 <p class="help">Restart the app afterwards. MCP servers load at startup.</p>
 
 <h2 class="sub">Or use it from a terminal</h2>
-<pre>python3 -m pagespeed_insights https://example.com
-python3 -m pagespeed_insights --field --history https://example.com</pre>
+<p class="help">It already works from the folder you installed it in, as
+   <code>python3 -m pagespeed_insights</code>. For a <code>pagespeed</code> command
+   that works from anywhere, link the launcher onto your PATH. Run this yourself,
+   setup does not install anything outside its own settings.</p>
+{cli_install()}
+<pre>pagespeed https://example.com
+pagespeed --field --history https://example.com
+pagespeed --json https://example.com</pre>
 
 <p class="help">You can close this tab. Setup has already shut down.</p>
 """, 'Considus · PageSpeed Insights, set up')

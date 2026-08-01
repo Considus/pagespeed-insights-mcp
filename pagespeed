@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""The `pagespeed` command.
+
+Symlink this somewhere on your PATH and the CLI works from any directory:
+
+    ln -s "$PWD/pagespeed" ~/.local/bin/pagespeed
+
+realpath, not just dirname. When this file is reached through a symlink,
+__file__ is the symlink's own path, so dirname gives the bin directory and the
+package import fails with the least helpful error in Python. Resolving the link
+first points sys.path at the repository, which is the entire job of this file.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(os.path.abspath(__file__))))
+
+from pagespeed_insights.cli import main  # noqa: E402
+
+if __name__ == '__main__':
+    sys.exit(main())
