@@ -153,20 +153,31 @@ def lab_of(lhr):
 
 
 def field_of(payload):
-    """CrUX as PSI embeds it: (scope, metrics). scope says whose data it is.
+    """CrUX as PSI embeds it: (scope, metrics, subject).
 
-    `origin` means Google had nothing for this exact URL and answered with the
-    whole site's numbers instead. Presenting that as the URL's own data would
-    be a lie of omission, so the scope travels with the metrics.
+    `scope` says whose data it is. `origin` means Google had nothing for this
+    exact URL and answered with the whole site's numbers instead. Presenting
+    that as the URL's own data would be a lie of omission, so it travels with
+    the metrics.
+
+    `subject` is the URL the data is ACTUALLY about, and it is not always the
+    one you asked for. Ask about https://www.bbc.co.uk/ and PSI returns field
+    data whose `id` is https://www.bbc.com/, because the request redirects and
+    Google reports on where it landed. `origin_fallback` stays false throughout,
+    so nothing in the response marks it as a substitution. Verified 2026-08-01,
+    and it matters: bbc.co.uk and bbc.com disagree on CLS by two categories, so
+    labelling that "this URL" hands someone a real number about a site they did
+    not ask about.
     """
     exp = payload.get('loadingExperience') or {}
     metrics = exp.get('metrics') or {}
     if metrics:
-        return ('origin' if exp.get('origin_fallback') else 'url'), metrics
+        return (('origin' if exp.get('origin_fallback') else 'url'),
+                metrics, exp.get('id'))
     origin = payload.get('originLoadingExperience') or {}
     if origin.get('metrics'):
-        return 'origin', origin['metrics']
-    return None, {}
+        return 'origin', origin['metrics'], origin.get('id')
+    return None, {}, None
 
 
 def _spread(values):
@@ -186,7 +197,8 @@ def _fingerprint(run):
     return json.dumps(body, sort_keys=True)
 
 
-def summarise(runs, url, strategy, field_scope=None, field_metrics=None):
+def summarise(runs, url, strategy, field_scope=None, field_metrics=None,
+              field_subject=None):
     """Median and spread across DISTINCT analyses.
 
     Deduplication happens here rather than at the call site so that nothing can
@@ -215,6 +227,9 @@ def summarise(runs, url, strategy, field_scope=None, field_metrics=None):
         'metrics': {},
         'field': {},
         'field_scope': field_scope,
+        # The URL the field data is really about. Differs from `url` when the
+        # request redirects, which PSI does not otherwise announce.
+        'field_subject': field_subject,
     }
 
     for cat in CATEGORIES:
@@ -279,7 +294,8 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
     if budget is None:
         budget = max(MIN_BUDGET, runs * BUDGET_PER_ANALYSIS)
 
-    lab, seen, field_scope, field_metrics = [], set(), None, {}
+    lab, seen = [], set()
+    field_scope, field_metrics, field_subject = None, {}, None
     started, calls = time.monotonic(), 0
 
     while len(lab) < runs:
@@ -308,7 +324,7 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
                 progress(len(lab), runs, url, strategy)
 
         if field_scope is None:      # identical across runs; take it once
-            field_scope, field_metrics = field_of(payload)
+            field_scope, field_metrics, field_subject = field_of(payload)
 
         if len(lab) >= runs:
             break
@@ -322,7 +338,7 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
         if wait > 0:
             sleep(min(wait, remaining))
 
-    result = summarise(lab, url, strategy, field_scope, field_metrics)
+    result = summarise(lab, url, strategy, field_scope, field_metrics, field_subject)
     result['requested'] = runs
     result['calls'] = calls
     # summarise only ever saw distinct analyses, so its own replay count is

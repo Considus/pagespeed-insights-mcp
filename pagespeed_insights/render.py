@@ -86,8 +86,18 @@ def result(res):
                          f"{_spread_note(label, value)}")
 
     if res['field']:
-        whose = ('this URL' if res['field_scope'] == 'url'
-                 else 'the whole origin (Google had none for this URL alone)')
+        # PSI follows redirects and reports field data for wherever it landed,
+        # with nothing in the response marking the substitution. Asking about
+        # bbc.co.uk returns bbc.com's numbers, and those two disagree on CLS by
+        # two categories. Saying "this URL" there would be false.
+        subject = res.get('field_subject')
+        moved = subject and subject.rstrip('/') != res['url'].rstrip('/')
+        if moved:
+            whose = f'{subject}, which is where this URL redirects'
+        elif res['field_scope'] == 'url':
+            whose = 'this URL'
+        else:
+            whose = 'the whole origin (Google had none for this URL alone)'
         lines.append(f'  Real users, 28-day p75 — {whose}')
         for label, value in res['field'].items():
             lines.append(f"    {label:<16} {duration(label, value['p75']):>8}"

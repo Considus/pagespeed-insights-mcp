@@ -308,6 +308,64 @@ class MedianAndSpread(unittest.TestCase):
         self.assertEqual(lab['scores']['seo'], 100)
 
 
+class RedirectedFieldData(unittest.TestCase):
+    """PSI answers about wherever the URL redirected to, and does not say so.
+
+    Asked about https://www.bbc.co.uk/ on 2026-08-01, PSI returned field data
+    whose `id` was https://www.bbc.com/ with `origin_fallback` false, so nothing
+    in the response marked the substitution. The two disagree on CLS by two
+    categories (0.08 against 0.00), so reporting it as "this URL" hands someone
+    a real number about a site they did not ask about. Silent and plausible,
+    like every other bug in this file.
+    """
+
+    @staticmethod
+    def _payload(subject, fallback=False):
+        return {'lighthouseResult': {'fetchTime': 't1', 'categories': {}, 'audits': {}},
+                'loadingExperience': {
+                    'id': subject, 'origin_fallback': fallback,
+                    'metrics': {'CUMULATIVE_LAYOUT_SHIFT_SCORE':
+                                {'percentile': 8, 'category': 'FAST'}}}}
+
+    def test_the_subject_is_carried_out_of_the_response(self):
+        scope, _, subject = psi.field_of(self._payload('https://www.bbc.com/'))
+        self.assertEqual(scope, 'url')
+        self.assertEqual(subject, 'https://www.bbc.com/')
+
+    def test_a_redirect_is_named_rather_than_called_this_url(self):
+        result = psi.summarise(
+            [{'scores': {}, 'metrics': {}, 'fetchTime': 't1'}],
+            'https://www.bbc.co.uk/', 'mobile', 'url',
+            {'CUMULATIVE_LAYOUT_SHIFT_SCORE': {'percentile': 8, 'category': 'FAST'}},
+            'https://www.bbc.com/')
+        text = render.result(result)
+        self.assertIn('https://www.bbc.com/', text)
+        self.assertIn('redirects', text)
+        self.assertNotIn('— this URL', text)
+
+    def test_the_same_url_is_still_called_this_url(self):
+        result = psi.summarise(
+            [{'scores': {}, 'metrics': {}, 'fetchTime': 't1'}],
+            'https://example.com/', 'mobile', 'url',
+            {'CUMULATIVE_LAYOUT_SHIFT_SCORE': {'percentile': 8, 'category': 'FAST'}},
+            'https://example.com/')
+        self.assertIn('this URL', render.result(result))
+
+    def test_a_trailing_slash_is_not_a_redirect(self):
+        """PSI normalises the trailing slash, and calling that a redirect would
+        put a scary note on almost every check."""
+        result = psi.summarise(
+            [{'scores': {}, 'metrics': {}, 'fetchTime': 't1'}],
+            'https://example.com', 'mobile', 'url',
+            {'CUMULATIVE_LAYOUT_SHIFT_SCORE': {'percentile': 8, 'category': 'FAST'}},
+            'https://example.com/')
+        self.assertIn('this URL', render.result(result))
+
+    def test_origin_fallback_still_says_so(self):
+        scope, _, _ = psi.field_of(self._payload('https://x.test/', fallback=True))
+        self.assertEqual(scope, 'origin')
+
+
 class CruxErrorClassification(unittest.TestCase):
     """Three refusals that mean genuinely different things and need different
     fixes. Conflating them sends people to fix the wrong thing."""
