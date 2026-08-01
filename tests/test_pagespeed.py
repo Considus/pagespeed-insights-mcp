@@ -5,17 +5,63 @@ found by running against the live API and both were silent — they produced a
 plausible number rather than an error, which is the only kind of bug that
 matters in a measurement tool.
 """
+import contextlib
+import html
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import setup                                                      # noqa: E402
 from pagespeed_insights import config, crux, psi, render          # noqa: E402
 from pagespeed_insights.errors import CruxUnavailable             # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Setup page helpers
+#
+# The page is assembled per platform and most of it is unreachable from the
+# machine running the tests, so the only way to cover it is to say which
+# platform to be. CI runs this on all three, which means each platform verifies
+# its own blocks for real and the other two by simulation.
+# ---------------------------------------------------------------------------
+_FAKE = {
+    'darwin': ('posix', 'darwin', '/home/x/pagespeed-insights-mcp', '/usr/bin/python3'),
+    'linux': ('posix', 'linux', '/home/x/pagespeed-insights-mcp', '/usr/bin/python3'),
+    # Program Files on purpose. The space is what broke the unquoted form, and a
+    # fixture without one would pass whether or not the quoting came back.
+    'nt': ('nt', 'win32', r'C:\Users\x\pagespeed-insights-mcp',
+           r'C:\Program Files\Python312\python.exe'),
+}
+
+
+@contextlib.contextmanager
+def as_platform(name):
+    saved = (os.name, sys.platform, setup.HERE, sys.executable)
+    os.name, sys.platform, setup.HERE, sys.executable = _FAKE[name]
+    try:
+        yield
+    finally:
+        os.name, sys.platform, setup.HERE, sys.executable = saved
+
+
+def headings(fragment):
+    return re.findall(r'<h3>(.*?)</h3>', fragment)
+
+
+def commands(fragment):
+    """The text of each block, as the reader would copy it."""
+    return [html.unescape(b).strip()
+            for b in re.findall(r'<pre class="term">(.*?)</pre>', fragment, re.S)]
+
+
+def visible(fragment):
+    return re.sub(r'\s+', ' ', html.unescape(re.sub('<[^>]+>', ' ', fragment)))
 
 
 class ClsScaling(unittest.TestCase):
@@ -297,6 +343,199 @@ class McpProtocol(unittest.TestCase):
         kills the stream rather than failing one call."""
         out = self._call({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/list'})
         json.dumps(out[0])
+
+
+class ThisMachineMarker(unittest.TestCase):
+    """The marker is the only thing telling a reader which of several blocks is
+    theirs, so a wrong one sends them to another platform's commands.
+
+    This is a regression test. rerun_blocks() once carried its own copy of the
+    marker string, and rewording it moved two of the three and left the copy
+    behind, rendering two different markers on one page. The string now lives in
+    _block() alone, and this fails if it is ever duplicated back out.
+    """
+
+    def test_one_block_is_marked_per_section(self):
+        for name in ('darwin', 'linux', 'nt'):
+            with as_platform(name):
+                for section, fn in (('rerun', setup.rerun_blocks),
+                                    ('usage', setup.usage_blocks)):
+                    marked = [h for h in headings(fn()) if 'this machine' in h]
+                    self.assertEqual(len(marked), 1, f'{section} on {name}: {marked}')
+
+    def test_the_marker_follows_the_platform(self):
+        with as_platform('nt'):
+            self.assertIn('Windows (this machine)', headings(setup.usage_blocks()))
+        for name in ('darwin', 'linux'):
+            with as_platform(name):
+                self.assertIn('macOS and Linux (this machine)',
+                              headings(setup.usage_blocks()))
+
+    def test_windows_has_no_install_block_to_mark(self):
+        """There is nothing to install on Windows, so an unmarked pair is the
+        correct output. path_note carries the explanation instead."""
+        with as_platform('nt'):
+            self.assertEqual(
+                [h for h in headings(setup.install_blocks()) if 'this machine' in h], [])
+            self.assertIn('nothing here to install', visible(setup.path_note()))
+
+
+class ForeignPaths(unittest.TestCase):
+    """Every block prints a path, and only one of them describes this computer.
+    A block headed Windows that says cd "/Users/someone" is worse than no
+    example, because it looks copyable."""
+
+    def test_only_the_current_platform_gets_the_real_path(self):
+        with as_platform('darwin'):
+            self.assertIn(setup.HERE, setup.install_blocks())      # the macOS block
+            self.assertIn('path/to/pagespeed-insights-mcp',
+                          setup.install_blocks())                  # the Linux one
+        with as_platform('nt'):
+            # Neither install block is about this machine, so neither may claim it.
+            self.assertNotIn(setup.HERE, setup.install_blocks())
+
+    def test_the_windows_block_never_shows_a_posix_path(self):
+        for name in ('darwin', 'linux'):
+            with as_platform(name):
+                windows_block = commands(setup.usage_blocks())[1]
+                self.assertNotIn(setup.HERE, windows_block)
+                self.assertIn(r'path\to\pagespeed-insights-mcp', windows_block)
+
+
+class RerunCommand(unittest.TestCase):
+    """Reopening setup failed three different ways, each silently.
+
+    `cd` to a path on another drive does nothing in cmd.exe, leaving the next
+    line to run somewhere else. An unquoted interpreter path stops at the space
+    in `C:\\Program Files`. And once quoted, PowerShell needs the call operator,
+    because a statement beginning with a quoted string prints the path instead
+    of running it. None of the three raises an error.
+    """
+
+    def test_there_is_no_cd(self):
+        """setup.py resolves everything from __file__, so the working directory
+        never mattered and the cd was pure risk."""
+        for name in ('darwin', 'linux', 'nt'):
+            with as_platform(name):
+                for block in commands(setup.rerun_blocks()):
+                    self.assertNotIn('cd ', block, f'{name}: {block}')
+
+    def test_both_paths_are_quoted_where_one_contains_a_space(self):
+        with as_platform('nt'):
+            windows_block = commands(setup.rerun_blocks())[1]
+            self.assertIn(f'"{sys.executable}"', windows_block)
+            self.assertIn(f'"{setup.HERE}\\setup.py"', windows_block)
+
+    def test_powershell_gets_the_call_operator_and_posix_does_not(self):
+        with as_platform('nt'):
+            self.assertTrue(commands(setup.rerun_blocks())[1].startswith('& "'))
+        with as_platform('darwin'):
+            posix_block = commands(setup.rerun_blocks())[0]
+            self.assertFalse(posix_block.startswith('&'))
+            self.assertIn(f'"{sys.executable}"', posix_block)
+
+    def test_it_is_one_command_not_two(self):
+        for name in ('darwin', 'nt'):
+            with as_platform(name):
+                for block in commands(setup.rerun_blocks()):
+                    self.assertEqual(len(block.splitlines()), 1, block)
+
+
+class InstallAndUsageAreSeparate(unittest.TestCase):
+    """Stacked in one block with a blank line between them, there was no line
+    that was unambiguously the last one, and the note underneath had to point at
+    a specific command. It pointed at a usage example instead."""
+
+    def test_the_install_block_ends_at_the_echo_line(self):
+        """path_note calls it 'the echo line' and describes 'the first two
+        lines'. Both stop being true if usage examples return to this block."""
+        for name in ('darwin', 'linux'):
+            with as_platform(name):
+                for block in commands(setup.install_blocks()):
+                    lines = block.splitlines()
+                    self.assertEqual(len(lines), 3, block)
+                    self.assertTrue(lines[2].startswith('echo '), lines[2])
+
+    def test_usage_blocks_install_nothing(self):
+        for name in ('darwin', 'linux', 'nt'):
+            with as_platform(name):
+                for block in commands(setup.usage_blocks()):
+                    for verb in ('mkdir', 'ln -s', 'echo '):
+                        self.assertNotIn(verb, block, f'{name}: {block}')
+
+
+class PathNote(unittest.TestCase):
+    """Three states, and the wrong one is worse than none: telling someone to
+    skip the line that is the reason the command does not work yet."""
+
+    def setUp(self):
+        self._path = os.environ.get('PATH', '')
+
+    def tearDown(self):
+        os.environ['PATH'] = self._path
+
+    def test_says_to_leave_the_line_out_when_the_folder_is_already_found(self):
+        os.environ['PATH'] = os.path.expanduser('~/.local/bin')
+        with as_platform('darwin'):
+            self.assertIn('leave that line out', visible(setup.path_note()))
+
+    def test_says_the_line_is_the_one_that_matters_when_it_is_not(self):
+        os.environ['PATH'] = '/usr/bin'
+        with as_platform('darwin'):
+            note = visible(setup.path_note())
+            self.assertIn('makes the command work', note)
+            self.assertNotIn('leave that line out', note)
+
+
+class VisibleCopy(unittest.TestCase):
+    def test_no_em_or_en_dashes_reach_the_reader(self):
+        """House convention, and the reason it needs a test is that most of this
+        copy only renders on a platform nobody is reading it from."""
+        for name in ('darwin', 'linux', 'nt'):
+            with as_platform(name):
+                for fragment in (setup.install_blocks(), setup.usage_blocks(),
+                                 setup.rerun_blocks(), setup.path_note(),
+                                 setup.install_prompt(), setup.EXAMPLE_PROMPTS):
+                    text = visible(fragment)
+                    self.assertNotIn('\u2014', text, f'{name}: {text[:80]}')
+                    self.assertNotIn('\u2013', text, f'{name}: {text[:80]}')
+
+
+class SetupPageRenders(unittest.TestCase):
+    """The whole page, on the real platform only. done_page reaches the config
+    directory, and a faked Windows cannot build a WindowsPath here."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_both_pages_render_with_and_without_saved_state(self):
+        for page in (setup.form_page(),
+                     setup.form_page('something went wrong', {'api_key': 'k'}),
+                     setup.done_page([], {'available': False, 'reason': 'x',
+                                          'hint': 'y', 'console_url': ''}),
+                     setup.done_page(['https://example.com'], {'available': True})):
+            self.assertTrue(page.startswith('<!doctype html>'))
+            self.assertIn('</html>', page)
+
+    def test_the_saved_urls_appear_on_the_done_page(self):
+        self.assertIn('https://example.com',
+                      visible(setup.done_page(['https://example.com'],
+                                              {'available': True})))
+
+    def test_the_install_prompt_carries_no_key(self):
+        """It is meant to be pasted into an assistant, so it must stay safe to
+        paste even when a key is saved."""
+        config.save({'api_key': 'AIzaSECRET', 'urls': []})
+        self.assertNotIn('AIzaSECRET', setup.install_prompt())
+        self.assertNotIn('AIzaSECRET', setup.done_page([], {'available': True}))
 
 
 if __name__ == '__main__':
