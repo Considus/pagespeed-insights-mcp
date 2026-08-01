@@ -31,11 +31,15 @@ from .errors import CruxUnavailable, PageSpeedError
 SERVER_NAME = 'pagespeed-insights'
 DEFAULT_PROTOCOL = '2025-06-18'
 
-# A run is 15-40s. These keep the worst case to something a client will wait
-# for, and refuse clearly rather than starting work that cannot finish.
+# These keep the worst case to something a client will wait for, and refuse
+# clearly rather than starting work that cannot finish.
 MAX_RUNS = 10
 MAX_URLS = 6
-MAX_ANALYSES = 30
+# The cost is TIME, not requests. Google re-analyses a URL about once a minute
+# and replays the cached result in between, so five distinct analyses take
+# roughly 150 seconds however often you ask. A cap counting requests would have
+# been meaningless once collection replaced counting.
+MAX_SECONDS = 15 * 60
 
 
 class ToolError(Exception):
@@ -72,20 +76,32 @@ def tool_check_pagespeed(args, progress=None):
     if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= MAX_RUNS:
         raise ToolError(f'runs must be a whole number from 1 to {MAX_RUNS}.')
 
-    total = len(urls) * len(strategies) * runs
-    if total > MAX_ANALYSES:
+    # Each URL and strategy collects independently, and each can take up to its
+    # own budget. Refuse up front rather than start something the client will
+    # abandon halfway through.
+    jobs = len(urls) * len(strategies)
+    budget = max(psi.MIN_BUDGET, runs * psi.BUDGET_PER_ANALYSIS)
+    worst_case = jobs * budget
+    if worst_case > MAX_SECONDS:
         raise ToolError(
-            f'that is {total} runs, roughly {total * 30 // 60} minutes, over this '
-            f"server's limit of {MAX_ANALYSES}. Reduce runs, drop 'both', or "
+            f'that is {jobs} page/strategy combinations at up to '
+            f'{budget // 60} minutes each, so up to {worst_case // 60} minutes, '
+            f'over this server\'s limit of {MAX_SECONDS // 60}. Google re-analyses '
+            'a URL about once a minute, so this is time rather than requests and '
+            'asking harder will not speed it up. Reduce runs, drop "both", or '
             'check fewer URLs.')
 
     key = config.api_key()
+    target = jobs * runs
     done = [0]
 
-    def tick(_d, _t, url, strat):
+    def tick(distinct, _target, url, strat):
+        # Fires when a NEW distinct analysis lands, not per request, so the
+        # count reflects measurements collected rather than calls spent.
         done[0] += 1
         if progress:
-            progress(done[0], total, f'{url} [{strat}]')
+            progress(done[0], target,
+                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
     reports, results = [], []
     for url in urls:
@@ -178,14 +194,16 @@ TOOLS = [
         'name': 'check_pagespeed',
         'description':
             'Measure a page with Google PageSpeed Insights and report the MEDIAN '
-            'of several runs with the min-max spread, so the number comes with '
-            'its uncertainty. A single Lighthouse run is noise — Total Blocking '
-            'Time swings threefold between runs on an unchanged page — so do not '
-            'set runs=1 to make it fast and then quote the score. Also drops runs '
-            'where PSI replayed a cached analysis, which would otherwise turn a '
-            'median into a vote for a stale result. SLOW: 15-40s per run, so the '
-            'default is several minutes. Returns a report and the same figures as '
-            'JSON.',
+            'of several DISTINCT analyses with the min-max spread, so the number '
+            'comes with its uncertainty. A single Lighthouse run is noise, Total '
+            'Blocking Time swings threefold between runs on an unchanged page, so '
+            'do not set runs=1 to make it fast and then quote the score. Google '
+            're-analyses a URL only about once a minute and replays the cached '
+            'result in between, so this keeps asking until it has genuinely '
+            'different analyses rather than the same one several times. That '
+            'means runs=5 takes roughly 150 seconds and asking harder will NOT '
+            'speed it up. Reports fewer analyses honestly if time runs out. '
+            'Returns a report and the same figures as JSON.',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -194,7 +212,8 @@ TOOLS = [
                 'strategy': {'type': 'string', 'enum': ['mobile', 'desktop', 'both'],
                              'description': 'Default mobile, which Google ranks on.'},
                 'runs': {'type': 'integer', 'minimum': 1, 'maximum': MAX_RUNS,
-                         'description': 'Runs to take the median over. Default 5.'},
+                         'description': 'DISTINCT analyses to collect and median '
+                                        'over. Default 5, which takes ~150s.'},
             },
             'additionalProperties': False,
         },
@@ -259,7 +278,7 @@ def _progress_fn(token):
     def emit(done, total, what):
         _send({'jsonrpc': '2.0', 'method': 'notifications/progress',
                'params': {'progressToken': token, 'progress': done, 'total': total,
-                          'message': f'run {done}/{total} — {what}'}})
+                          'message': what}})
     return emit
 
 

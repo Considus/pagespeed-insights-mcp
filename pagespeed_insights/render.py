@@ -41,12 +41,39 @@ def result(res):
     word = 'analysis' if analyses == 1 else 'analyses'
     lines = [f"{res['url']}  [{res['strategy']}, median of {analyses} distinct {word}]"]
 
-    if res['cached_replays']:
+    # Two entry points reach this. measure() collects until it has N distinct
+    # analyses and knows what that cost in calls and seconds. summarise() on its
+    # own only knows how many of the runs it was handed were replays. Both have
+    # to say that replays happened and why, or the reader is left thinking a
+    # median of five was five measurements.
+    if res.get('calls'):
+        plural = '' if res['calls'] == 1 else 's'
+        cost = f"  {res['calls']} call{plural} over {res['elapsed']:.0f}s"
+        if res.get('cached_replays'):
+            cost += (f", {res['cached_replays']} of them a cached analysis "
+                     'replayed on an')
+            lines.append(cost)
+            lines.append('    identical timestamp or identical measurements')
+        else:
+            lines.append(cost)
+    elif res.get('cached_replays'):
         lines += [
             f"  NOTE: {res['cached_replays']} of {res['requested']} runs were PSI replaying a",
             '    cached analysis and were dropped, on an identical timestamp or',
             '    identical measurements. Just after a deploy a cached result predates',
             '    the change, so re-run in a few minutes.']
+
+    if res.get('short'):
+        lines += [
+            f"  NOTE: asked for {res['requested']} distinct analyses and got "
+            f"{analyses} before the",
+            '    time budget ran out. Google re-analyses a URL about once a minute,',
+            '    so more takes longer rather than more requests. The spread below is',
+            f'    across {analyses}, which is the number to judge it on.']
+    elif analyses == 1:
+        lines += [
+            '  NOTE: this is one analysis, so there is no spread and no way to tell',
+            '    a real change from run-to-run noise. Treat it as an anecdote.']
 
     lines.append('  Lighthouse (lab)')
     for cat, value in res['scores'].items():
