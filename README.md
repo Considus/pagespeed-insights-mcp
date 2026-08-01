@@ -69,16 +69,26 @@ So this reports both, separately, and never merges them into a single figure.
 ## Before you start
 
 You need an API key from Google Cloud. It is free, it takes about a minute, and
-this is the whole of it.
+there is one decision to make, at step 3.
 
-1. Open `console.cloud.google.com` and pick your account.
+1. Open [console.cloud.google.com](https://console.cloud.google.com/) and pick
+   your account.
 2. **APIs & Services**.
 3. **API Library** in the sidebar. Search for **PageSpeed Insights API**,
    select it, press **Enable**.
+   > **Decide here, while you are on this screen.** If you also want real-user
+   > data, meaning what actual Chrome visitors experienced and how it has moved
+   > over the last six months, search for **Chrome UX Report API** and enable
+   > that as well before moving on. Same key, no second credential, one more
+   > search on the screen you are already looking at. Skip it and everything
+   > else still works, you just get lab measurements only. Adding it later means
+   > coming back to this screen and to step 7, which is the only reason it is
+   > worth deciding now.
 4. **Credentials**, **from the sidebar, not from the page you are on**.
 5. **Create credentials** at the top, then **API key**.
 6. Give it a name.
-7. Under **API restrictions**, tick **PageSpeed Insights API**.
+7. Under **API restrictions**, tick **PageSpeed Insights API**, and tick
+   **Chrome UX Report API** too if you enabled it at step 3.
 8. Leave **Authenticate API calls through a service account** unticked.
 9. Leave **Application restrictions** on **None**.
 10. **Create**, then copy the key.
@@ -94,10 +104,6 @@ Step 9 looks wrong and is not. An HTTP-referrer restriction is the safe-looking
 choice on that form, and it makes the key unusable from a program like this
 one, because there is no referring web page. The API restriction at step 7 is
 the one that limits what the key can reach.
-
-For real-user data, repeat step 3 for **Chrome UX Report API** and add it at
-step 7 as well. It is the same key, there is no second credential to fetch.
-Everything else works without it.
 
 ## Install
 
