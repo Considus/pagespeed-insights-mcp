@@ -44,8 +44,9 @@ def result(res):
     if res['cached_replays']:
         lines += [
             f"  NOTE: {res['cached_replays']} of {res['requested']} runs were PSI replaying a",
-            '    cached analysis (identical fetchTime) and were dropped. Just after a',
-            '    deploy a cached result predates the change — re-run in a few minutes.']
+            '    cached analysis and were dropped, on an identical timestamp or',
+            '    identical measurements. Just after a deploy a cached result predates',
+            '    the change, so re-run in a few minutes.']
 
     lines.append('  Lighthouse (lab)')
     for cat, value in res['scores'].items():

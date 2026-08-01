@@ -141,6 +141,65 @@ class Deduplication(unittest.TestCase):
         self.assertEqual(result['analyses'], 2)
 
 
+class ReplayUnderAFreshTimestamp(unittest.TestCase):
+    """The fetchTime rule leaks, and this is the leak.
+
+    These are the analyses catchlight.app actually returned on 2026-08-01. Eleven
+    runs reported four distinct analyses, and two of the four agreed on FCP to
+    thirteen decimal places under different timestamps. Two independent
+    Lighthouse runs do not agree to the femtosecond, so it was one analysis
+    served twice and counted as corroboration. Silent, like the other two at the
+    top of this file: it produced a plausible number rather than an error.
+    """
+
+    A = {'fetchTime': '2026-08-01T21:04:10Z', 'scores': {'performance': 98},
+         'metrics': {'LCP': 2251, 'FCP': 1686.8756582616209}}
+    B = {'fetchTime': '2026-08-01T21:04:22Z', 'scores': {'performance': 98},
+         'metrics': {'LCP': 2270, 'FCP': 1717.6918476482374}}
+    C = {'fetchTime': '2026-08-01T21:04:41Z', 'scores': {'performance': 98},
+         'metrics': {'LCP': 2251, 'FCP': 1686.8756582616209}}
+
+    def test_identical_measurements_are_one_analysis(self):
+        result = psi.summarise([self.A, self.B, self.C],
+                               'https://catchlight.app/', 'mobile')
+        self.assertEqual(result['analyses'], 2)
+        self.assertEqual(result['cached_replays'], 1)
+
+    def test_the_sample_cannot_be_inflated_by_a_repeat(self):
+        """Three runs that are really two must not read as three, because the
+        count is the whole basis for trusting the median."""
+        many = psi.summarise([self.A, self.C, dict(self.C), self.B],
+                             'https://catchlight.app/', 'mobile')
+        self.assertEqual(many['analyses'], 2)
+
+    def test_the_spread_still_comes_from_both_real_analyses(self):
+        result = psi.summarise([self.A, self.B, self.C],
+                               'https://catchlight.app/', 'mobile')
+        self.assertEqual(result['metrics']['LCP']['min'], 2251)
+        self.assertEqual(result['metrics']['LCP']['max'], 2270)
+
+    def test_genuinely_different_runs_all_survive(self):
+        """The rule has to be wrong in only one direction. Dropping real
+        analyses would shrink the sample it exists to protect."""
+        result = psi.summarise([self.A, self.B], 'https://catchlight.app/', 'mobile')
+        self.assertEqual(result['analyses'], 2)
+        self.assertEqual(result['cached_replays'], 0)
+
+    def test_runs_that_measured_nothing_are_not_collapsed(self):
+        """Two empty runs are two failures, not a replay. Treating them as one
+        would understate what was attempted."""
+        empty = {'fetchTime': None, 'scores': {}, 'metrics': {}}
+        result = psi.summarise([empty, dict(empty)], 'https://example.com/', 'mobile')
+        self.assertEqual(result['analyses'], 2)
+
+    def test_the_note_no_longer_claims_fetchtime_is_the_only_rule(self):
+        result = psi.summarise([self.A, self.B, self.C],
+                               'https://catchlight.app/', 'mobile')
+        note = render.result(result)
+        self.assertIn('identical measurements', note)
+        self.assertNotIn('identical fetchTime', note)
+
+
 class MedianAndSpread(unittest.TestCase):
     def test_spread_travels_with_the_median(self):
         runs = [{'scores': {'performance': s}, 'metrics': {}, 'fetchTime': f't{i}'}
