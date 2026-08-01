@@ -18,14 +18,32 @@ min-max printed beside it. A change that falls inside the spread is not a
 change. Quoting the median without the spread would be the same dishonesty in a
 smarter hat, so the two travel together everywhere in this module.
 
-DEDUPLICATION ON fetchTime. PSI caches its result per URL and replays it. Ask
+DEDUPLICATION, ON TWO RULES. PSI caches its result per URL and replays it. Ask
 five times and you can be handed one analysis five times, which turns a median
 into a vote for whatever Google has cached. This is not hypothetical: minutes
 after a deploy on 2026-07-30, two of three runs came back with a byte-identical
 fetchTime from *before* the deploy and dragged the median back to the pre-fix
-score while the one fresh run showed the fix. Runs are therefore deduplicated on
-fetchTime and the number of genuinely distinct analyses is always reported, so a
-"median of 5" that was really a median of 1 says so.
+score while the one fresh run showed the fix.
+
+The first rule is that fetchTime. The second is the measurement itself, and it
+exists because the first one leaks. On 2026-08-01, eleven runs against one URL
+reported four distinct analyses between them, and two of those four agreed on
+FCP to thirteen decimal places — 1686.8756582616209 ms, twice. Two independent
+Lighthouse runs do not agree to the femtosecond. It was one analysis served
+again under a fetchTime new enough to pass the first rule, and it had been
+counted as corroboration.
+
+So a run is also dropped when everything it measured is identical to a run
+already seen. That subsumes the first rule almost entirely, since a shared
+fetchTime implies shared numbers, and deleting the fetchTime check moves no test
+in this suite. It is kept for the one case it still owns alone: a run that
+measured nothing has no numbers to compare, so a repeated empty result is
+catchable only by its timestamp. Where the two disagree the safer reading wins:
+identical numbers
+cannot be told apart from a replay, and calling them one analysis understates
+the sample instead of overstating the confidence, which is the direction this
+module is allowed to be wrong in. The number of genuinely distinct analyses is
+always reported, so a "median of 5" that was really a median of 1 says so.
 """
 import json
 import statistics
@@ -155,19 +173,35 @@ def _spread(values):
     return {'median': statistics.median(values), 'min': min(values), 'max': max(values)}
 
 
+def _fingerprint(run):
+    """Everything the run measured, as one comparable value.
+
+    Returns None when the run measured nothing at all. Two empty runs are not
+    evidence of a replay, they are two runs that failed, and collapsing them
+    would report a smaller sample than was actually attempted.
+    """
+    body = {'scores': run.get('scores') or {}, 'metrics': run.get('metrics') or {}}
+    if not body['scores'] and not body['metrics']:
+        return None
+    return json.dumps(body, sort_keys=True)
+
+
 def summarise(runs, url, strategy, field_scope=None, field_metrics=None):
     """Median and spread across DISTINCT analyses.
 
     Deduplication happens here rather than at the call site so that nothing can
     reach a median without passing through it.
     """
-    seen, unique = set(), []
+    stamps, measurements, unique = set(), set(), []
     for run in runs:
         stamp = run.get('fetchTime')
-        if stamp and stamp in seen:
+        measured = _fingerprint(run)
+        if (stamp and stamp in stamps) or (measured and measured in measurements):
             continue
         if stamp:
-            seen.add(stamp)
+            stamps.add(stamp)
+        if measured:
+            measurements.add(measured)
         unique.append(run)
 
     replays = len(runs) - len(unique)
