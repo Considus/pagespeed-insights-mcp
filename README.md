@@ -55,10 +55,14 @@ So this reports both, separately, and never merges them into a single figure.
 
 ## What it does
 
-- Median of N PageSpeed runs, with the min-max spread beside every score and
-  metric.
-- Drops runs where Google replayed a cached analysis rather than measuring, and
-  says how many went.
+- Median of N **distinct** analyses, with the min-max spread beside every score
+  and metric.
+- Keeps asking until it has N genuinely different analyses, because Google
+  re-analyses a URL about once a minute and replays the cached result to
+  everything that asks in between. Five requests in a row is one measurement
+  five times over.
+- Says what that cost in calls and seconds, and reports fewer analyses honestly
+  rather than padding the count when time runs out.
 - Real-user data from the Chrome UX Report, current and up to 6 months of
   weekly history, when Google has it.
 - Says plainly when Google has none, rather than letting a lab score stand in
@@ -160,15 +164,17 @@ path.
 
 | Tool | What it does |
 |---|---|
-| `check_pagespeed` | Median of N runs with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). |
+| `check_pagespeed` | Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). Collects rather than counts requests, so 5 takes roughly 150s. |
 | `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
 | `diagnose` | Whether the key works and whether the Chrome UX Report is reachable, without disclosing the key. |
 
-A 5-run check on 2 URLs takes several minutes, because each run is a real
-Lighthouse analysis on Google's hardware. The server sends a progress update
-after every run, which is what stops a client giving up on it. If your assistant
-asks whether it should use `runs=1` to be quicker, the answer is no, that is the
-thing this exists to stop.
+A 5-analysis check on 2 URLs takes several minutes, and asking harder will not
+speed it up. Google re-analyses a URL roughly once a minute whatever you do, so
+the time is spent waiting for genuinely new measurements rather than queuing
+requests. The server sends a progress update each time a new analysis lands,
+which is what stops a client giving up on it. If your assistant offers to use
+`runs=1` to be quicker, the answer is no, that is the thing this exists to
+stop.
 
 Start with `diagnose` if anything looks wrong. It separates a configuration
 problem from a slow page in about 2 seconds.

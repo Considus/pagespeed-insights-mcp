@@ -233,16 +233,59 @@ def summarise(runs, url, strategy, field_scope=None, field_metrics=None):
     return result
 
 
-def measure(url, strategy='mobile', runs=5, key=None, progress=None):
-    """Run PSI `runs` times and summarise. The whole public entry point.
+# Google re-analyses a URL about once a minute and serves the cached result to
+# everything that asks in between, so calling N times in a row returns one
+# analysis N times. Measured on 2026-08-01 against considus.com: 60 calls at 5s
+# produced 9 distinct analyses, one roughly every 60s.
+#
+# The interval is therefore not a rate limit, it is how often it is worth
+# looking. Subsampling that same series showed what each interval would catch:
+#
+#     5s   60 calls   9 distinct   5 distinct after 136s
+#    10s   30 calls   9 distinct   5 distinct after 144s
+#    15s   20 calls   8 distinct   5 distinct after 149s   <- default
+#    30s   10 calls   7 distinct   5 distinct after 201s
+#    60s    6 calls   6 distinct   5 distinct after 244s
+#
+# Polling three times as hard buys thirteen seconds. Going slower than 30s
+# starts losing analyses outright. There is also a floor: a fresh analysis
+# BLOCKS for 7-12s while Lighthouse runs, so a request cannot be issued much
+# more often than that anyway.
+POLL_INTERVAL = 15
+# Per analysis asked for, with a floor. Five wants ~150s, so this is generous
+# without being unbounded.
+BUDGET_PER_ANALYSIS = 60
+MIN_BUDGET = 120
 
-    progress(done, total, url, strategy) is called after each analysis, so a
-    caller that has to keep a client or a person from giving up can say where it
-    has got to. A five-run check is minutes, not seconds.
+
+def measure(url, strategy='mobile', runs=5, key=None, progress=None,
+            interval=POLL_INTERVAL, budget=None, sleep=time.sleep):
+    """Collect `runs` DISTINCT analyses, or as many as the budget allows.
+
+    `runs` is a target, not a number of requests. Asking Google five times in a
+    row is not five measurements, it is one measurement repeated, and a median
+    over it is a median of one dressed up as a median of five. So this keeps
+    asking until it has `runs` genuinely different analyses, and reports how
+    many it actually got when the budget runs out first.
+
+    Returning fewer than asked for is a normal outcome and not an error. The
+    caller is told the real count, which is the only number that makes the
+    spread mean anything.
+
+    progress(distinct, target, url, strategy) fires whenever the distinct count
+    changes, so a slow collection can show it is getting somewhere rather than
+    looking hung.
     """
-    lab, field_scope, field_metrics = [], None, {}
-    for done in range(1, runs + 1):
+    if budget is None:
+        budget = max(MIN_BUDGET, runs * BUDGET_PER_ANALYSIS)
+
+    lab, seen, field_scope, field_metrics = [], set(), None, {}
+    started, calls = time.monotonic(), 0
+
+    while len(lab) < runs:
+        call_started = time.monotonic()
         payload = fetch(url, strategy, key)
+        calls += 1
         lhr = payload.get('lighthouseResult') or {}
         runtime_error = lhr.get('runtimeError')
         if runtime_error:
@@ -252,9 +295,40 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None):
                 'Unlike a quota or credential problem, this one is about the '
                 'page itself. Check the URL serves a 200 to an anonymous '
                 'visitor, with no login and no geographic block.')
-        lab.append(lab_of(lhr))
+
+        analysis = lab_of(lhr)
+        # fetchTime alone is not enough. Google has more than one backend and
+        # they hand out the same analysis under different timestamps, so the
+        # measurements themselves are what decide whether this is new.
+        marks = (analysis.get('fetchTime'), _fingerprint(analysis))
+        if not any(m and m in seen for m in marks):
+            seen.update(m for m in marks if m)
+            lab.append(analysis)
+            if progress:
+                progress(len(lab), runs, url, strategy)
+
         if field_scope is None:      # identical across runs; take it once
             field_scope, field_metrics = field_of(payload)
-        if progress:
-            progress(done, runs, url, strategy)
-    return summarise(lab, url, strategy, field_scope, field_metrics)
+
+        if len(lab) >= runs:
+            break
+        remaining = budget - (time.monotonic() - started)
+        if remaining <= 0:
+            break
+        # The call itself counts towards the interval. A fresh analysis blocks
+        # for 7-12s, so sleeping the full 15 on top would pace at 25s and take
+        # half again as long to collect, for nothing.
+        wait = interval - (time.monotonic() - call_started)
+        if wait > 0:
+            sleep(min(wait, remaining))
+
+    result = summarise(lab, url, strategy, field_scope, field_metrics)
+    result['requested'] = runs
+    result['calls'] = calls
+    # summarise only ever saw distinct analyses, so its own replay count is
+    # zero by construction. The replays happened out here, and they are the
+    # whole reason this takes minutes rather than seconds.
+    result['cached_replays'] = calls - len(lab)
+    result['elapsed'] = round(time.monotonic() - started, 1)
+    result['short'] = len(lab) < runs
+    return result

@@ -28,8 +28,9 @@ from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
 EXIT = {QuotaExhausted: 3, CredentialRejected: 4, PageUnreachable: 5, Unavailable: 6}
 
 
-def _progress(done, total, url, strategy):
-    print(f'  {url} [{strategy}] run {done}/{total}...', file=sys.stderr, flush=True)
+def _progress(distinct, target, url, strategy):
+    print(f'  {url} [{strategy}] {distinct}/{target} distinct analyses...',
+          file=sys.stderr, flush=True)
 
 
 def _field(url, key, want_history, quiet):
@@ -72,7 +73,16 @@ def main(argv=None):
     parser.add_argument('--strategy', choices=('mobile', 'desktop', 'both'),
                         default='mobile', help='mobile is what Google ranks on')
     parser.add_argument('--runs', type=int, default=5,
-                        help='runs to take the median over (default 5)')
+                        help='DISTINCT analyses to collect and median over '
+                             '(default 5). Google re-analyses about once a '
+                             'minute, so 5 takes roughly 150s')
+    parser.add_argument('--interval', type=int, default=psi.POLL_INTERVAL,
+                        help=f'seconds between checks (default '
+                             f'{psi.POLL_INTERVAL}); below this buys almost '
+                             'nothing, a fresh call already blocks 7-12s')
+    parser.add_argument('--budget', type=int, default=None,
+                        help='seconds to spend per URL before reporting what '
+                             'it got (default 60 per analysis, min 120)')
     parser.add_argument('--field', action='store_true',
                         help='also fetch real-user data from the Chrome UX Report')
     parser.add_argument('--history', action='store_true',
@@ -104,7 +114,8 @@ def main(argv=None):
         for url in urls:
             for strategy in strategies:
                 res = psi.measure(url, strategy, args.runs, key,
-                                  progress=None if args.json else _progress)
+                                  progress=None if args.json else _progress,
+                                  interval=args.interval, budget=args.budget)
                 payload['results'].append(res)
                 if not args.json:
                     print('\n' + render.result(res))

@@ -200,6 +200,98 @@ class ReplayUnderAFreshTimestamp(unittest.TestCase):
         self.assertNotIn('identical fetchTime', note)
 
 
+class CollectUntilDistinct(unittest.TestCase):
+    """`runs` is a target for DISTINCT analyses, not a number of requests.
+
+    Google re-analyses a URL about once a minute and replays the cached result
+    to everything that asks in between. Measured 2026-08-01: 60 calls at 5s
+    intervals produced 9 distinct analyses. So calling five times in a row is
+    one measurement repeated five times, and a median over it is a median of
+    one wearing a disguise. These pin the collecting behaviour that replaced it.
+    """
+
+    @staticmethod
+    def _payload(fcp, stamp):
+        return {'lighthouseResult': {
+            'fetchTime': stamp,
+            'categories': {'performance': {'score': 0.98}},
+            'audits': {'first-contentful-paint': {'numericValue': fcp}}}}
+
+    def _run(self, script, **kw):
+        """Drive measure() off a fixed sequence of API responses."""
+        state = {'i': 0}
+
+        def fake_fetch(url, strategy, key, **_):
+            payload = script[min(state['i'], len(script) - 1)]
+            state['i'] += 1
+            return payload
+
+        real, psi.fetch = psi.fetch, fake_fetch
+        self.slept = []
+        try:
+            return psi.measure('https://x.test/', runs=kw.pop('runs', 3), key='k',
+                               sleep=self.slept.append, **kw)
+        finally:
+            psi.fetch = real
+
+    def test_replays_do_not_count_towards_the_target(self):
+        result = self._run([self._payload(1000, 't1'), self._payload(1000, 't1'),
+                            self._payload(1100, 't2'), self._payload(1200, 't3')])
+        self.assertEqual(result['analyses'], 3)
+        self.assertEqual(result['calls'], 4)
+        self.assertEqual(result['cached_replays'], 1)
+        self.assertFalse(result['short'])
+
+    def test_a_replay_under_a_fresh_timestamp_does_not_count_either(self):
+        """The two-backend case. Same measurements, different stamp."""
+        result = self._run([self._payload(1000, 't1'), self._payload(1000, 't2'),
+                            self._payload(1100, 't3'), self._payload(1200, 't4')])
+        self.assertEqual(result['analyses'], 3)
+        self.assertEqual(result['cached_replays'], 1)
+
+    def test_it_gives_up_on_budget_and_says_so_rather_than_pretending(self):
+        """Reporting two analyses is honest. Reporting five would not be."""
+        result = self._run([self._payload(1000, 't1')], budget=0)
+        self.assertTrue(result['short'])
+        self.assertEqual(result['analyses'], 1)
+        self.assertEqual(result['requested'], 3)
+
+    def test_the_target_is_still_reported_when_it_falls_short(self):
+        """The spread means nothing without knowing what it is across."""
+        result = self._run([self._payload(1000, 't1')], budget=0)
+        self.assertIn('asked for 3 distinct', render.result(result))
+
+    def test_no_wait_after_the_last_analysis_lands(self):
+        """Sleeping once more would add 15s to every check for nothing."""
+        self._run([self._payload(1000, 't1'), self._payload(1100, 't2'),
+                   self._payload(1200, 't3')])
+        self.assertEqual(len(self.slept), 2)      # 3 calls, 2 gaps
+
+    def test_one_analysis_is_flagged_as_an_anecdote(self):
+        result = self._run([self._payload(1000, 't1')], runs=1)
+        self.assertFalse(result['short'])
+        self.assertIn('anecdote', render.result(result))
+
+    def test_progress_reports_distinct_collected_not_calls_made(self):
+        seen = []
+        state = {'i': 0}
+        script = [self._payload(1000, 't1'), self._payload(1000, 't1'),
+                  self._payload(1100, 't2')]
+
+        def fake_fetch(url, strategy, key, **_):
+            p = script[min(state['i'], len(script) - 1)]
+            state['i'] += 1
+            return p
+
+        real, psi.fetch = psi.fetch, fake_fetch
+        try:
+            psi.measure('https://x.test/', runs=2, key='k', sleep=lambda s: None,
+                        progress=lambda d, t, u, s: seen.append(d))
+        finally:
+            psi.fetch = real
+        self.assertEqual(seen, [1, 2])            # not [1, 2, 3]
+
+
 class MedianAndSpread(unittest.TestCase):
     def test_spread_travels_with_the_median(self):
         runs = [{'scores': {'performance': s}, 'metrics': {}, 'fetchTime': f't{i}'}
