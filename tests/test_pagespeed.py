@@ -349,7 +349,10 @@ class RedirectedFieldData(unittest.TestCase):
             'https://example.com/', 'mobile', 'url',
             {'CUMULATIVE_LAYOUT_SHIFT_SCORE': {'percentile': 8, 'category': 'FAST'}},
             'https://example.com/')
-        self.assertIn('this URL', render.result(result))
+        # The claim that matters is the absence of a redirect, not the wording
+        # used to say so. Asserting the phrase made this fail on a rewrite that
+        # changed nothing it was guarding.
+        self.assertNotIn('redirect', render.result(result))
 
     def test_a_trailing_slash_is_not_a_redirect(self):
         """PSI normalises the trailing slash, and calling that a redirect would
@@ -359,7 +362,7 @@ class RedirectedFieldData(unittest.TestCase):
             'https://example.com', 'mobile', 'url',
             {'CUMULATIVE_LAYOUT_SHIFT_SCORE': {'percentile': 8, 'category': 'FAST'}},
             'https://example.com/')
-        self.assertIn('this URL', render.result(result))
+        self.assertNotIn('redirect', render.result(result))
 
     def test_origin_fallback_still_says_so(self):
         scope, _, _ = psi.field_of(self._payload('https://x.test/', fallback=True))

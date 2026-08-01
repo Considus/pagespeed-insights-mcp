@@ -50,12 +50,12 @@ def result(res):
         plural = '' if res['calls'] == 1 else 's'
         cost = f"  {res['calls']} call{plural} over {res['elapsed']:.0f}s"
         if res.get('cached_replays'):
-            cost += (f", {res['cached_replays']} of them a cached analysis "
-                     'replayed on an')
-            lines.append(cost)
-            lines.append('    identical timestamp or identical measurements')
-        else:
-            lines.append(cost)
+            # NOT "dropped". Every analysis above is genuine; these are calls
+            # that came back with one already seen. They are the waiting, not
+            # results thrown away, and the earlier wording read as the latter.
+            cost += (f", {res['cached_replays']} of which returned an analysis "
+                     'already seen')
+        lines.append(cost)
     elif res.get('cached_replays'):
         lines += [
             f"  NOTE: {res['cached_replays']} of {res['requested']} runs were PSI replaying a",
@@ -92,12 +92,21 @@ def result(res):
         # two categories. Saying "this URL" there would be false.
         subject = res.get('field_subject')
         moved = subject and subject.rstrip('/') != res['url'].rstrip('/')
-        if moved:
-            whose = f'{subject}, which is where this URL redirects'
-        elif res['field_scope'] == 'url':
-            whose = 'this URL'
+        if res['field_scope'] == 'url':
+            # Name the page, always. A run with --field prints this block and
+            # then the Chrome UX Report block, and those legitimately differ:
+            # one is this page, the other is every page on the site. Headed
+            # "real users" twice with different numbers, they read as a
+            # contradiction. Saying which is which, in the same shape both
+            # times, is what makes them legible as two questions.
+            whose = f'this page only, {subject or res["url"]}'
+            if moved:
+                # Parenthesised, not another dash. The heading already has one
+                # and two in a line is a sentence nobody parses on first read.
+                whose += ' (where this URL redirects to)'
         else:
-            whose = 'the whole origin (Google had none for this URL alone)'
+            whose = ('every page on the site, because Google had nothing for '
+                     'this page alone')
         lines.append(f'  Real users, 28-day p75 — {whose}')
         for label, value in res['field'].items():
             lines.append(f"    {label:<16} {duration(label, value['p75']):>8}"
@@ -106,7 +115,13 @@ def result(res):
 
 
 def crux_record(rec, url):
-    lines = [f"{url}  [real users, {rec['scope']}-level, 28-day p75]"]
+    # Same shape of sentence as the embedded block in result(), on purpose.
+    # This one is almost always the whole site while that one is a single page,
+    # so the numbers differ for a good reason. Two headings reading "real users"
+    # with different figures under them is what makes that look like an error.
+    whose = ('every page on the site' if rec['scope'] == 'origin'
+             else 'this page only')
+    lines = [f'{url}  [real users, 28-day p75 — {whose}]']
     period = rec.get('period')
     if period:
         lines.append(f"  collected {period['first']} to {period['last']}")
