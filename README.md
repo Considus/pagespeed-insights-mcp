@@ -305,7 +305,10 @@ This is free and stays that way. Apache 2.0 means you can take it, build on it,
 and ship it commercially without owing anything back, which is deliberate.
 
 If it stopped you chasing a regression that was never there, then consider
-[buying me a coffee](https://buymeacoffee.com/considus).
+[buying me a coffee](https://buymeacoffee.com/considus). If it didn't, telling
+me what it got wrong is worth more than the coffee, and a bug report about a
+number that looked plausible and wasn't is the most useful thing anyone can
+send.
 
 ## Licence
 
