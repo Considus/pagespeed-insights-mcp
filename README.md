@@ -111,33 +111,24 @@ the one that limits what the key can reach.
 
 ## Install
 
-Python 3.9 or newer, which macOS and most Linux machines already have. On
-Windows, install it from python.org or run `winget install Python.Python.3.12`.
+Whichever route you take, clone it somewhere permanent, a folder in your home
+directory is right. Your assistant's config will point at that exact path, so a
+folder that later moves is a connection that breaks. Not Downloads, not a temp
+folder.
 
-```bash
-git clone https://github.com/Considus/pagespeed-insights-mcp.git
-cd pagespeed-insights-mcp
-python3 setup.py
-```
-
-Clone it somewhere permanent, a folder in your home directory is right. Your
-assistant's config will point at that exact path, so a folder that later moves
-is a connection that breaks. Not Downloads, not a temp folder.
-
-`setup.py` opens a small page in your browser. It is served from your own
-machine on a random port behind a single-use link, it shuts itself down when
-you are finished, and it never writes down anything you type. Paste the key in.
-It checks the key against Google before saving a thing, and tells you whether
-real-user data is available.
+Both routes finish the same way. `setup.py` opens a small page in your browser,
+served from your own machine on a random port behind a single-use link. It
+shuts itself down when you are finished and it never writes down anything you
+type. Paste the key in. It checks the key against Google before saving a thing,
+and tells you whether real-user data is available.
 
 Run it again any time. It notices you have set it up before, and a blank key
 field means keep the one you have.
 
-### Install without a terminal
+### Have an assistant do it
 
-If the commands above are not your thing, paste this into an AI assistant that
-runs shell commands **on this computer**. Read what it proposes before you let
-it run.
+Paste this into an AI assistant that runs shell commands **on this computer**.
+Read what it proposes before you let it run.
 
 ```
 Please install the PageSpeed Insights MCP server from
@@ -145,6 +136,17 @@ https://github.com/Considus/pagespeed-insights-mcp on this computer, following t
 Install section of its README exactly. Clone it into a permanent folder in my home
 directory, then run setup.py and tell me the local link it prints so I can finish
 setup in my browser. Show me each command before you run it.
+```
+
+### Or run the commands yourself
+
+Python 3.9 or newer, which macOS and most Linux machines already have. On
+Windows, install it from python.org or run `winget install Python.Python.3.12`.
+
+```bash
+git clone https://github.com/Considus/pagespeed-insights-mcp.git
+cd pagespeed-insights-mcp
+python3 setup.py
 ```
 
 ## Connect it to your assistant
