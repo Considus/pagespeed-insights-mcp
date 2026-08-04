@@ -128,8 +128,38 @@ def crux_record(rec, url):
     if not rec['metrics']:
         return '\n'.join(lines + ['  ' + NO_FIELD_NOTE])
     for label, value in rec['metrics'].items():
-        lines.append(f"    {label:<6} {duration(label, value['p75']):>8}")
+        bar = _histogram(value.get('histogram'))
+        lines.append(f"    {label:<6} {duration(label, value['p75']):>8}   {bar}")
+
+    # The four phases only exist when the LCP element is an image, and they are
+    # the difference between "the server is slow" and "the image starts late".
+    phases = rec.get('lcp_phases') or {}
+    if phases:
+        total = sum(v for v in phases.values() if isinstance(v, (int, float)))
+        lines.append('  Where the LCP time goes')
+        for label, ms in phases.items():
+            share = f'{ms / total:.0%}' if total else ''
+            lines.append(f'    {label:<18} {duration("x", ms):>8}   {share}')
+
+    shares = rec.get('shares') or {}
+    for label, fractions in shares.items():
+        top = ', '.join(f'{k} {v:.0%}' for k, v in
+                        sorted(fractions.items(), key=lambda kv: -kv[1])[:3] if v >= 0.01)
+        lines.append(f'  {label}: {top}')
     return '\n'.join(lines)
+
+
+def _histogram(buckets):
+    """The good / needs-improvement / poor split, as words.
+
+    A p75 hides its own tail. On one real origin the p75 was a comfortable
+    1.19s while 1.7% of visits took over four seconds, and those two facts lead
+    to different work.
+    """
+    if not buckets or len(buckets) < 3:
+        return ''
+    good, ok, poor = (b.get('density') or 0 for b in buckets[:3])
+    return f'{good:.0%} good, {ok:.0%} fair, {poor:.0%} poor'
 
 
 def crux_history(hist, url):
