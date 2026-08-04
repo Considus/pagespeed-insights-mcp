@@ -159,3 +159,66 @@ def crux_history(hist, url):
         lines.append(f"    {label:<6} {duration(label, first):>8} -> "
                      f"{duration(label, last):>8}   {direction}{gap_note}")
     return '\n'.join(lines)
+
+
+# Findings are ranked within their category and never across it, because the two
+# currencies are not comparable. A performance diagnostic is worth the
+# milliseconds it claims off a weighted metric; an accessibility failure is
+# worth the points it costs that category directly.
+CATEGORY_TITLE = {
+    'performance': 'Performance',
+    'accessibility': 'Accessibility',
+    'best-practices': 'Best practices',
+    'seo': 'SEO',
+}
+
+FINDINGS_NOTE = (
+    'Savings are Google\'s estimates for each fix on its own. They do not add '
+    'up: two fixes claiming time off the same metric overlap, and Lighthouse '
+    'models no interaction between them. Treat the order as the useful part.')
+
+
+def findings(items, url, limit=5):
+    """Findings grouped by category, ranked within each, with their spread."""
+    if not items:
+        return f'{url}\n  Nothing failed consistently enough to report.'
+
+    groups = {}
+    for f in items:
+        groups.setdefault(f['category'], []).append(f)
+
+    lines = [f'{url}  [what is failing, ranked by what fixing it is worth]']
+    for cat in ('performance', 'accessibility', 'best-practices', 'seo'):
+        found = groups.get(cat)
+        if not found:
+            continue
+        shown = found[:limit]
+        more = len(found) - len(shown)
+        lines.append(f'\n  {CATEGORY_TITLE.get(cat, cat)}'
+                     + (f'  ({len(found)} findings)' if len(found) > 1 else ''))
+        for f in shown:
+            worth = _worth(f)
+            lines.append(f"    {f['title']}{'  [not on the page]' if f['off_page'] else ''}")
+            if worth:
+                lines.append(f'      {worth}')
+            if f['items']:
+                lines.append(f"      {f['items']} affected element(s)")
+            if f['description']:
+                lines.append(f"      {f['description'][:150]}")
+        if more:
+            lines.append(f'    ... and {more} more, lower impact')
+    return '\n'.join(lines)
+
+
+def _worth(f):
+    """What the fix is worth, in the currency of its category."""
+    if f['unit'] == 'weighted-ms' and f['savings']:
+        parts = []
+        for metric, v in sorted(f['savings'].items(), key=lambda kv: -kv[1]['median']):
+            spread = ('' if v['min'] == v['max']
+                      else f" (ran {v['min']:.0f}-{v['max']:.0f})")
+            parts.append(f"{metric} {v['median']:.0f} ms{spread}")
+        return 'saves ' + ', '.join(parts)
+    if f['unit'] == 'score-points' and f['impact']:
+        return f"worth {f['impact']:.0f} point(s) of the {CATEGORY_TITLE.get(f['category'], '')} score"
+    return ''
