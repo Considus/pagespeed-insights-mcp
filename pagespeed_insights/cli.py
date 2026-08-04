@@ -19,9 +19,11 @@ those should fail a build. So the failure kind is in the exit status:
 """
 import argparse
 import json
+import pathlib
 import sys
+import time
 
-from . import __version__, config, crux, psi, render
+from . import __version__, config, crux, psi, render, report
 from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
                      PageUnreachable, QuotaExhausted, Unavailable)
 
@@ -91,6 +93,9 @@ def main(argv=None):
     parser.add_argument('--history', action='store_true',
                         help='with --field, also fetch the p75 time series')
     parser.add_argument('--json', action='store_true', help='machine-readable output')
+    parser.add_argument('--report', metavar='FILE.html',
+                        help='also write a single self-contained HTML page, for '
+                             'sending to whoever can act on it. Implies --findings')
     parser.add_argument('--key', help='API key (prefer PAGESPEED_API_KEY or setup)')
     parser.add_argument('--version', action='version', version=__version__)
     args = parser.parse_args(argv)
@@ -102,6 +107,10 @@ def main(argv=None):
         parser.error('--runs must be at least 1')
     if args.history and not args.field:
         parser.error('--history needs --field')
+    if args.report:
+        # A report with no findings is a scoreboard, and the point of the page
+        # is the part somebody can act on.
+        args.findings = True
 
     key = config.api_key(args.key)
     strategies = ('mobile', 'desktop') if args.strategy == 'both' else (args.strategy,)
@@ -137,6 +146,16 @@ def main(argv=None):
         else:
             print(f'\nerror: {e.message}\n{e.hint}', file=sys.stderr)
         return EXIT.get(type(e), 1)
+
+    if args.report:
+        page = report.build(
+            payload['results'],
+            field={u: v for u, v in payload['field'].items()},
+            findings_by_url={r['url']: r.get('findings') or [] for r in payload['results']},
+            generated=time.strftime('%d %B %Y'))
+        pathlib.Path(args.report).write_text(page, encoding='utf-8')
+        print(f'\nwrote {args.report} ({len(page.encode()) // 1024}KB, self-contained)',
+              file=sys.stderr)
 
     if args.json:
         json.dump(payload, sys.stdout, indent=2)

@@ -489,6 +489,22 @@ class Findings(unittest.TestCase):
         f = next(x for x in findings.collect(self._records({}, {}), self.LHR)
                  if x['id'] == 'redirects')
         self.assertNotIn('Learn more', f['description'])
+        self.assertNotIn('http', f['description'])
+
+    def test_markdown_links_anywhere_become_plain_words(self):
+        """Google puts links mid-sentence, not only in a trailing Learn more.
+        Stripping only the trailing one left
+        "[Optimize LCP](https://developer.chrome.com/...)" in the output."""
+        self.assertEqual(
+            findings._prose('[Optimize LCP](https://x) by making it discoverable.'),
+            'Optimize LCP by making it discoverable.')
+
+    def test_a_dangling_learn_more_is_removed_not_just_unlinked(self):
+        """Keeping the words while dropping the link leaves a phrase pointing at
+        nothing, which reads as deliberate and is worse than raw markdown."""
+        self.assertEqual(
+            findings._prose('Redirects add delays. [Learn more](https://y).'),
+            'Redirects add delays.')
 
     def test_weights_are_read_from_the_response_not_hardcoded(self):
         """Lighthouse changes them between versions."""
