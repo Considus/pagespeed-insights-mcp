@@ -48,6 +48,26 @@ METRICS = [
     ('round_trip_time', 'RTT', True),
 ]
 
+# The four phases LCP decomposes into, plus what the LCP element actually is.
+# Individually these say almost nothing. Together they turn "LCP is 2.4s" into
+# which of four things owns it, which is the difference between buying a CDN
+# and removing a lazy-load attribute. Only present when the LCP element is an
+# image, which is why the resource type travels with them.
+LCP_PHASES = [
+    ('largest_contentful_paint_image_time_to_first_byte', 'server response'),
+    ('largest_contentful_paint_image_resource_load_delay', 'load delay'),
+    ('largest_contentful_paint_image_resource_load_duration', 'download'),
+    ('largest_contentful_paint_image_element_render_delay', 'render delay'),
+]
+
+# Not metrics. Fractions that describe the audience rather than its experience,
+# and each one changes how the numbers above should be read.
+SHARES = [
+    ('form_factors', 'devices'),
+    ('navigation_types', 'how they arrived'),
+    ('largest_contentful_paint_resource_type', 'LCP element'),
+]
+
 
 def _post(endpoint, body, key, timeout=90):
     request = urllib.request.Request(
@@ -179,8 +199,27 @@ def record(url, key, origin_only=True, form_factor=None):
         if metric:
             out['metrics'][label] = {
                 'p75': _number((metric.get('percentiles') or {}).get('p75')),
-                'histogram': metric.get('histogram'),
+                # The share of visits that were good, needing improvement and
+                # poor. A p75 of 1.19s hides that 3.6% of visits took over four
+                # seconds, which is a different and often more actionable fact.
+                'histogram': [{'start': _number(b.get('start')),
+                               'end': _number(b.get('end')),
+                               'density': b.get('density')}
+                              for b in (metric.get('histogram') or [])],
             }
+
+    out['lcp_phases'] = {}
+    for key, label in LCP_PHASES:
+        metric = (rec.get('metrics') or {}).get(key)
+        if metric:
+            out['lcp_phases'][label] = _number((metric.get('percentiles') or {}).get('p75'))
+
+    out['shares'] = {}
+    for key, label in SHARES:
+        metric = (rec.get('metrics') or {}).get(key)
+        fractions = (metric or {}).get('fractions')
+        if fractions:
+            out['shares'][label] = {k: _number(v) for k, v in fractions.items()}
     return out
 
 

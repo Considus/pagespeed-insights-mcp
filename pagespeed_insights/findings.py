@@ -39,6 +39,7 @@ them. They rank well and they add up badly. Several of the largest findings are
 also not on the page at all, being hosting, DNS or third-party decisions. This
 produces a prioritised list, not a route to 100.
 """
+import re
 import statistics
 
 # Audits whose failure is a fact about the network or the business rather than
@@ -109,6 +110,24 @@ def record(lhr):
     return out
 
 
+# Google writes its descriptions in markdown and puts links anywhere in them,
+# not only in a trailing "[Learn more]". Stripping just that one left
+# "[Optimize LCP](https://developer.chrome.com/...)" sitting in the output as
+# raw markdown. Keep the words, drop the syntax.
+_MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]*\)')
+# The trailing "Learn more" clause goes entirely, link and words. Stripping only
+# the syntax left the phrase behind pointing at nothing, which is worse than the
+# raw markdown because it looks deliberate.
+_LEARN_MORE = re.compile(r'\s*\[?Learn (?:more|why)[^.\]]*\]?\([^)]*\)\.?|'
+                         r'\s*Learn (?:more|why)[^.]*\.?$', re.I)
+
+
+def _prose(text):
+    text = _LEARN_MORE.sub('', text or '')
+    text = _MD_LINK.sub(r'\1', text)
+    return ' '.join(text.split()).strip()
+
+
 def _spread(values):
     return {'median': statistics.median(values), 'min': min(values), 'max': max(values)}
 
@@ -170,7 +189,7 @@ def collect(records, lhr, limit=None):
         findings.append({
             'id': aid,
             'title': audit.get('title', aid),
-            'description': (audit.get('description') or '').split('[Learn')[0].strip(),
+            'description': _prose(audit.get('description')),
             'category': category,
             'group': group,
             'score': _spread(scores) if scores else None,
