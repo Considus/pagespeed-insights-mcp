@@ -118,8 +118,11 @@ _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]*\)')
 # The trailing "Learn more" clause goes entirely, link and words. Stripping only
 # the syntax left the phrase behind pointing at nothing, which is worse than the
 # raw markdown because it looks deliberate.
-_LEARN_MORE = re.compile(r'\s*\[?Learn (?:more|why)[^.\]]*\]?\([^)]*\)\.?|'
-                         r'\s*Learn (?:more|why)[^.]*\.?$', re.I)
+# Google ends these with "Learn more", "Learn why", "Learn how to minify CSS"
+# and others. Matching a fixed list missed "Learn how" and left it in the
+# report, so this matches the opener and takes the rest of the sentence.
+_LEARN_MORE = re.compile(r'\s*\[?Learn\b[^.\]]*\]?\([^)]*\)\.?|'
+                         r'\s*Learn\b[^.]*\.?\s*$', re.I)
 
 
 def _prose(text):

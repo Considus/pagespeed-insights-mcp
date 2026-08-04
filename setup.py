@@ -25,7 +25,6 @@ knows where its own config lives, so setup hands you a prompt to give it. One
 path that works for every client, including ones that did not exist when this
 was written.
 """
-import base64
 import hmac
 import html
 import http.server
@@ -41,14 +40,12 @@ import webbrowser
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from pagespeed_insights import config, crux, psi  # noqa: E402
+from pagespeed_insights import brand, config, crux, psi  # noqa: E402
 from pagespeed_insights.errors import PageSpeedError  # noqa: E402
 
 TOKEN = secrets.token_urlsafe(32)
 IDLE_TIMEOUT = 900          # the page self-destructs after 15 quiet minutes
 SERVER_FILE = os.path.join(HERE, 'mcp_server.py')
-BRAND_SVG = os.path.join(HERE, 'assets', 'considus-icon.svg')
-FONTS_DIR = os.path.join(HERE, 'assets', 'fonts')
 
 _last_seen = time.time()
 
@@ -56,57 +53,11 @@ _last_seen = time.time()
 # ---------------------------------------------------------------------------
 # Brand
 # ---------------------------------------------------------------------------
-_FONT_FACES = [
-    # (family, weight, style, filename) — only the faces the page actually uses.
-    ('DM Sans', 400, 'normal', 'dm-sans-normal-400.woff2'),
-    ('DM Sans', 500, 'normal', 'dm-sans-normal-500.woff2'),
-    ('Cormorant Garamond', 300, 'normal', 'cormorant-garamond-normal-300.woff2'),
-    ('Cormorant Garamond', 300, 'italic', 'cormorant-garamond-italic-300.woff2'),
-]
-_font_css_cache = None
-
-
-def font_css():
-    """Embed the brand faces as data: URIs.
-
-    The page loads nothing from the network, so inlining is the only way to
-    guarantee the brand faces on a machine that does not have them installed.
-    A missing file drops that face and the text falls back to the system stack,
-    which is why this never raises."""
-    global _font_css_cache
-    if _font_css_cache is not None:
-        return _font_css_cache
-    rules = []
-    for family, weight, style, name in _FONT_FACES:
-        try:
-            with open(os.path.join(FONTS_DIR, name), 'rb') as f:
-                b64 = base64.b64encode(f.read()).decode('ascii')
-        except OSError:
-            continue
-        rules.append(
-            "@font-face{font-family:'%s';font-weight:%d;font-style:%s;"
-            "font-display:swap;src:url(data:font/woff2;base64,%s) format('woff2')}"
-            % (family, weight, style, b64))
-    _font_css_cache = '\n'.join(rules)
-    return _font_css_cache
-
-
-def brand_mark():
-    """Inline the real Considus icon, or omit it rather than invent one."""
-    try:
-        with open(BRAND_SVG, 'r', encoding='utf-8') as f:
-            svg = f.read()
-    except OSError:
-        return ''
-    start = svg.find('<svg')
-    if start < 0:
-        return ''
-    # Affinity exports an xmlns:serif attribute. It is an XML namespace and is
-    # never fetched, but a page that promises to load nothing should not carry
-    # a stray http:// at all.
-    return (svg[start:]
-            .replace(' xmlns:serif="http://www.serif.com/"', '')
-            .replace(' xmlns:xlink="http://www.w3.org/1999/xlink"', ''))
+# The mark, the faces and the palette live in pagespeed_insights.brand, because
+# the HTML report needs exactly the same ones and two copies of a font loader
+# is how the two pages start disagreeing about what the product looks like.
+font_css = brand.font_css
+brand_mark = brand.mark
 
 
 # ---------------------------------------------------------------------------
