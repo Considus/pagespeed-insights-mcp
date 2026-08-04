@@ -83,6 +83,9 @@ def main(argv=None):
     parser.add_argument('--budget', type=int, default=None,
                         help='seconds to spend per URL before reporting what '
                              'it got (default 60 per analysis, min 120)')
+    parser.add_argument('--findings', action='store_true',
+                        help='also report what is failing, ranked by what '
+                             'fixing it is worth. Costs no extra API calls')
     parser.add_argument('--field', action='store_true',
                         help='also fetch real-user data from the Chrome UX Report')
     parser.add_argument('--history', action='store_true',
@@ -115,10 +118,16 @@ def main(argv=None):
             for strategy in strategies:
                 res = psi.measure(url, strategy, args.runs, key,
                                   progress=None if args.json else _progress,
-                                  interval=args.interval, budget=args.budget)
+                                  interval=args.interval, budget=args.budget,
+                                  with_findings=args.findings)
                 payload['results'].append(res)
                 if not args.json:
                     print('\n' + render.result(res))
+                    if args.findings:
+                        print('\n' + render.findings(res.get('findings') or [], url))
+                        print('\n  ' + render.FINDINGS_NOTE)
+                    for w in res.get('warnings') or []:
+                        print(f'\n  Google warns: {w}')
             if args.field:
                 payload['field'][url] = _field(url, key, args.history, args.json)
     except PageSpeedError as e:

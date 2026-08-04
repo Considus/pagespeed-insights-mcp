@@ -52,6 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import findings as _findings
 from .errors import (CredentialRejected, PageUnreachable, QuotaExhausted,
                      Unavailable)
 
@@ -274,7 +275,8 @@ MIN_BUDGET = 120
 
 
 def measure(url, strategy='mobile', runs=5, key=None, progress=None,
-            interval=POLL_INTERVAL, budget=None, sleep=time.sleep):
+            interval=POLL_INTERVAL, budget=None, sleep=time.sleep,
+            with_findings=False):
     """Collect `runs` DISTINCT analyses, or as many as the budget allows.
 
     `runs` is a target, not a number of requests. Asking Google five times in a
@@ -296,6 +298,9 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
 
     lab, seen = [], set()
     field_scope, field_metrics, field_subject = None, {}, None
+    # One compact record per DISTINCT analysis, so a finding can be held to
+    # the same standard as a score: reported only if it reproduces.
+    finding_records, last_lhr = [], None
     started, calls = time.monotonic(), 0
 
     while len(lab) < runs:
@@ -320,6 +325,9 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
         if not any(m and m in seen for m in marks):
             seen.update(m for m in marks if m)
             lab.append(analysis)
+            if with_findings:
+                finding_records.append(_findings.record(lhr))
+                last_lhr = lhr
             if progress:
                 progress(len(lab), runs, url, strategy)
 
@@ -347,4 +355,10 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
     result['cached_replays'] = calls - len(lab)
     result['elapsed'] = round(time.monotonic() - started, 1)
     result['short'] = len(lab) < runs
+    if with_findings and last_lhr is not None:
+        result['findings'] = _findings.collect(finding_records, last_lhr)
+        result['lighthouse_version'] = last_lhr.get('lighthouseVersion')
+        # Google's own warnings, verbatim. On a redirect it says so more
+        # plainly than anything we would infer from comparing URLs.
+        result['warnings'] = last_lhr.get('runWarnings') or []
     return result
