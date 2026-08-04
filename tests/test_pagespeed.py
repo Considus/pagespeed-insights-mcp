@@ -18,7 +18,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import setup                                                      # noqa: E402
-from pagespeed_insights import config, crux, psi, render          # noqa: E402
+from pagespeed_insights import config, crux, findings, psi, render  # noqa: E402
 from pagespeed_insights.errors import CruxUnavailable             # noqa: E402
 
 
@@ -369,6 +369,142 @@ class RedirectedFieldData(unittest.TestCase):
         self.assertEqual(scope, 'origin')
 
 
+class Findings(unittest.TestCase):
+    """Three rules, each of which exists because measuring showed it had to.
+
+    Audits are as noisy as the scores they explain. Across three distinct
+    analyses of one unchanged page on 2026-08-04, `unused-javascript` claimed
+    1200ms, 1800ms and 1200ms off LCP, and TBT savings swung 1450-2750ms. A
+    findings tool that quoted one run would be the exact fault this package
+    exists to correct, with the aggravating factor that a number attached to an
+    instruction sends someone off to do work.
+    """
+
+    LHR = {
+        'audits': {
+            'redirects': {'title': 'Avoid multiple page redirects', 'score': 0,
+                          'scoreDisplayMode': 'metricSavings',
+                          'description': 'Redirects introduce delays. [Learn more](x)',
+                          'metricSavings': {'LCP': 7000, 'FCP': 7000}},
+            'unused-javascript': {'title': 'Reduce unused JavaScript', 'score': 0,
+                                  'scoreDisplayMode': 'metricSavings',
+                                  'description': 'Defer scripts.',
+                                  'metricSavings': {'LCP': 1200}},
+            'cache-insight': {'title': 'Use efficient cache lifetimes', 'score': 0.5,
+                              'scoreDisplayMode': 'binary', 'description': 'Cache.'},
+            'largest-contentful-paint': {'title': 'Largest Contentful Paint',
+                                         'score': 0, 'scoreDisplayMode': 'numeric'},
+            'button-name': {'title': 'Buttons do not have an accessible name',
+                            'score': 0, 'scoreDisplayMode': 'binary',
+                            'description': 'Name your buttons.'},
+            'not-here': {'title': 'Does not apply', 'score': 0,
+                         'scoreDisplayMode': 'notApplicable'},
+            'ask-a-human': {'title': 'Check this yourself', 'score': 0,
+                            'scoreDisplayMode': 'manual'},
+        },
+        'categories': {
+            'performance': {'auditRefs': [
+                {'id': 'largest-contentful-paint', 'weight': 25, 'group': 'metrics'},
+                {'id': 'first-contentful-paint', 'weight': 10, 'group': 'metrics'},
+                {'id': 'redirects', 'weight': 0, 'group': 'diagnostics'},
+                {'id': 'unused-javascript', 'weight': 0, 'group': 'diagnostics'},
+                {'id': 'cache-insight', 'weight': 0, 'group': 'diagnostics'},
+            ]},
+            'accessibility': {'auditRefs': [{'id': 'button-name', 'weight': 10}]},
+        },
+    }
+
+    def _records(self, *overrides):
+        """One record per analysis, with per-analysis overrides applied."""
+        out = []
+        for over in overrides:
+            lhr = json.loads(json.dumps(self.LHR))
+            for aid, patch in over.items():
+                if patch is None:
+                    lhr['audits'][aid]['score'] = 1        # passed this time
+                else:
+                    lhr['audits'][aid].setdefault('metricSavings', {}).update(patch)
+            out.append(findings.record(lhr))
+        return out
+
+    def test_a_fault_that_did_not_reproduce_is_not_reported(self):
+        """It passed once, so it is the instrument moving, not a finding."""
+        recs = self._records({}, {'unused-javascript': None}, {})
+        got = {f['id'] for f in findings.collect(recs, self.LHR)}
+        self.assertIn('redirects', got)
+        self.assertNotIn('unused-javascript', got)
+
+    def test_savings_carry_a_median_and_a_spread(self):
+        recs = self._records({'unused-javascript': {'LCP': 1200}},
+                             {'unused-javascript': {'LCP': 1800}},
+                             {'unused-javascript': {'LCP': 1200}})
+        f = next(x for x in findings.collect(recs, self.LHR) if x['id'] == 'unused-javascript')
+        self.assertEqual(f['savings']['LCP']['median'], 1200)
+        self.assertEqual((f['savings']['LCP']['min'], f['savings']['LCP']['max']), (1200, 1800))
+
+    def test_the_metric_audits_are_not_findings(self):
+        """They ARE the score. "Fix Largest Contentful Paint" is not advice."""
+        got = {f['id'] for f in findings.collect(self._records({}, {}), self.LHR)}
+        self.assertNotIn('largest-contentful-paint', got)
+
+    def test_not_applicable_and_manual_are_not_failures(self):
+        got = {f['id'] for f in findings.collect(self._records({}, {}), self.LHR)}
+        self.assertNotIn('not-here', got)
+        self.assertNotIn('ask-a-human', got)
+
+    def test_ranked_by_what_moves_the_score_not_the_biggest_number(self):
+        """redirects claims 7000ms on two weighted metrics, unused-js 1200 on
+        one, and cache-insight claims nothing at all despite failing."""
+        f = findings.collect(self._records({}, {}), self.LHR)
+        perf = [x['id'] for x in f if x['category'] == 'performance']
+        self.assertEqual(perf[0], 'redirects')
+        self.assertEqual(perf[-1], 'cache-insight')
+
+    def test_a_diagnostic_with_no_metric_savings_scores_zero(self):
+        f = next(x for x in findings.collect(self._records({}, {}), self.LHR)
+                 if x['id'] == 'cache-insight')
+        self.assertEqual(f['impact'], 0)
+
+    def test_non_performance_is_ranked_in_score_points_instead(self):
+        """Milliseconds mean nothing to the accessibility score, so that
+        category is ranked by the points a failure costs it."""
+        f = next(x for x in findings.collect(self._records({}, {}), self.LHR)
+                 if x['id'] == 'button-name')
+        self.assertEqual(f['unit'], 'score-points')
+        self.assertEqual(f['impact'], 10)
+
+    def test_categories_are_never_ranked_against_each_other(self):
+        f = findings.collect(self._records({}, {}), self.LHR)
+        cats = [x['category'] for x in f]
+        self.assertEqual(cats, sorted(cats), 'findings must be grouped by category')
+
+    def test_off_page_faults_are_flagged(self):
+        """A DNS redirect is real and is not a change to the page. Whoever is
+        reading may not be the person who can fix it."""
+        f = next(x for x in findings.collect(self._records({}, {}), self.LHR)
+                 if x['id'] == 'redirects')
+        self.assertTrue(f['off_page'])
+
+    def test_the_learn_more_link_is_stripped(self):
+        f = next(x for x in findings.collect(self._records({}, {}), self.LHR)
+                 if x['id'] == 'redirects')
+        self.assertNotIn('Learn more', f['description'])
+
+    def test_weights_are_read_from_the_response_not_hardcoded(self):
+        """Lighthouse changes them between versions."""
+        w = findings.weights_of(self.LHR)
+        self.assertEqual(w['largest-contentful-paint'], 25)
+        self.assertEqual(w['button-name'], 10)
+
+    def test_the_report_says_savings_do_not_add_up(self):
+        """Two fixes claiming time off LCP overlap. The output must not invite
+        anyone to sum them."""
+        self.assertIn('do not add up', render.FINDINGS_NOTE)
+
+    def test_nothing_failing_says_so_rather_than_printing_an_empty_list(self):
+        self.assertIn('Nothing failed', render.findings([], 'https://x.test/'))
+
+
 class CruxErrorClassification(unittest.TestCase):
     """Three refusals that mean genuinely different things and need different
     fixes. Conflating them sends people to fix the wrong thing."""
@@ -514,7 +650,7 @@ class McpProtocol(unittest.TestCase):
         out = self._call({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
-                         {'check_pagespeed', 'field_data', 'diagnose'})
+                         {'check_pagespeed', 'diagnose_page', 'field_data', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])

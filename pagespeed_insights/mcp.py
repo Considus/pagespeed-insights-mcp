@@ -116,6 +116,38 @@ def tool_check_pagespeed(args, progress=None):
             {'type': 'text', 'text': json.dumps(payload, indent=2)}]
 
 
+def tool_diagnose_page(args, progress=None):
+    """What is failing, ranked by what fixing it is worth."""
+    urls = _urls(args.get('urls'))
+    runs = args.get('runs', 3)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
+        raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. Below '
+                        'two there is nothing to check a finding against, so a '
+                        'one-off failure would be reported as a fact.')
+    key = config.api_key()
+    done = [0]
+
+    def tick(distinct, _t, url, strat):
+        done[0] += 1
+        if progress:
+            progress(done[0], len(urls) * runs,
+                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+    texts, payload = [], {}
+    for url in urls:
+        res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
+        found = res.get('findings') or []
+        texts.append(render.findings(found, url))
+        for w in res.get('warnings') or []:
+            texts.append(f'  Google warns: {w}')
+        payload[url] = {'analyses': res['analyses'], 'findings': found,
+                        'lighthouse_version': res.get('lighthouse_version'),
+                        'warnings': res.get('warnings') or []}
+
+    return [{'type': 'text', 'text': '\n\n'.join(texts) + '\n\n' + render.FINDINGS_NOTE},
+            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+
 def tool_field_data(args, progress=None):
     urls = _urls(args.get('urls'))
     want_history = bool(args.get('history'))
@@ -218,6 +250,34 @@ TOOLS = [
             'additionalProperties': False,
         },
         'handler': tool_check_pagespeed,
+    },
+    {
+        'name': 'diagnose_page',
+        'description':
+            'Report what is FAILING on a page and rank it by what fixing it is '
+            'worth, using Google\'s own audit findings and remediation text. '
+            'Only reports a fault that failed in EVERY distinct analysis, '
+            'because audits are as noisy as scores and a one-off failure is the '
+            'instrument moving rather than a fact about the page. Estimated '
+            'savings carry their median and spread for the same reason. Ranked '
+            'by what actually moves the score: the performance score is five '
+            'metrics and every other performance audit weighs zero, so a big '
+            'estimated saving on an unweighted diagnostic is not the first thing '
+            'to fix. Savings do NOT add up, they overlap, so use the order '
+            'rather than the sum. SLOW, like check_pagespeed, and costs no extra '
+            'API calls.',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'urls': {'type': 'array', 'items': {'type': 'string'},
+                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
+                'runs': {'type': 'integer', 'minimum': 2, 'maximum': MAX_RUNS,
+                         'description': 'Distinct analyses to check findings '
+                                        'against. Default 3, minimum 2.'},
+            },
+            'additionalProperties': False,
+        },
+        'handler': tool_diagnose_page,
     },
     {
         'name': 'field_data',
