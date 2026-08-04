@@ -225,6 +225,52 @@ tell a broken site apart from a bad afternoon at Google.
 Only 5 means the page is at fault. Failing a build on 3 or 6 is failing it
 because Google was busy.
 
+## Updating
+
+There's no package and no installer, so there's nothing to download. The server
+runs as `mcp_server.py` out of the directory you cloned into, which makes an
+update a pull and a restart.
+
+Your key and your saved URLs aren't in that directory, they sit in
+`settings.json` in your platform's config directory, so an update leaves them
+alone and you won't be asked for the key again.
+
+The restart is the part that catches people out. A stdio MCP server is a
+long-running process, and it reads `mcp_server.py` once, when the app starts it.
+Changing the file underneath a server that's already running does nothing at
+all, so quit the app properly and open it again. Closing the window isn't enough
+on macOS, and neither is closing the last tab on Windows if it leaves the app in
+the tray.
+
+Releases are tagged, and the releases page on GitHub says what changed in each
+one. `pagespeed --version` tells you which one you're on, and your assistant can
+read the same number out of the server's handshake. `git pull` puts you on the
+latest `main`, which is sometimes ahead of the newest tag.
+
+### Have an assistant do it
+
+Paste this into an AI assistant that runs shell commands **on this computer**. It
+can do the pull, but it can't restart the app it's running inside, so the last
+step stays yours.
+
+```
+Please update my PageSpeed Insights MCP server. Find where it's installed by
+reading the path out of this app's MCP config rather than guessing it, run git
+pull in that folder, and tell me what changed. Don't run setup.py and don't edit
+my settings.json, my key and saved URLs are already in it. Then remind me to quit
+this app completely and open it again, because the server only reads
+mcp_server.py at startup.
+```
+
+### Or run the commands yourself
+
+In the folder you cloned into.
+
+```bash
+cd pagespeed-insights-mcp
+git pull
+```
+
 ## Where things live
 
 Your key and your saved URLs go in `settings.json` in your platform's config
