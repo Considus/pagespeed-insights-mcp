@@ -499,6 +499,22 @@ class Findings(unittest.TestCase):
             findings._prose('[Optimize LCP](https://x) by making it discoverable.'),
             'Optimize LCP by making it discoverable.')
 
+    def test_every_learn_clause_goes_not_just_learn_more(self):
+        """Google writes "Learn how to minify CSS" as well as "Learn more", and
+        a fixed list missed it, so the report printed the dangling phrase."""
+        for text, want in (
+                ('Minifying CSS reduces payload. Learn how to minify CSS.',
+                 'Minifying CSS reduces payload.'),
+                ('Defer offscreen images. Learn why this matters.',
+                 'Defer offscreen images.')):
+            self.assertEqual(findings._prose(text), want)
+
+    def test_the_word_learn_mid_sentence_is_left_alone(self):
+        """Only a trailing clause goes. Stripping the word everywhere would eat
+        real prose."""
+        keep = 'A description that legitimately says learners are welcome.'
+        self.assertEqual(findings._prose(keep), keep)
+
     def test_a_dangling_learn_more_is_removed_not_just_unlinked(self):
         """Keeping the words while dropping the link leaves a phrase pointing at
         nothing, which reads as deliberate and is worse than raw markdown."""
