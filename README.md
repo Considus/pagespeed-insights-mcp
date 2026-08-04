@@ -242,6 +242,11 @@ all, so quit the app properly and open it again. Closing the window isn't enough
 on macOS, and neither is closing the last tab on Windows if it leaves the app in
 the tray.
 
+Releases are tagged, and the releases page on GitHub says what changed in each
+one. `pagespeed --version` tells you which one you're on, and your assistant can
+read the same number out of the server's handshake. `git pull` puts you on the
+latest `main`, which is sometimes ahead of the newest tag.
+
 ### Have an assistant do it
 
 Paste this into an AI assistant that runs shell commands **on this computer**. It
