@@ -7,6 +7,7 @@ words. Two formatters would drift, and the first thing they would disagree about
 is what a number means — which is the failure this whole package exists to
 prevent, arriving through the back door.
 """
+from . import lcp as _lcp
 
 NOISE_NOTE = (
     'Lab scores are simulated on Google\'s hardware. The spread is real '
@@ -133,13 +134,12 @@ def crux_record(rec, url):
 
     # The four phases only exist when the LCP element is an image, and they are
     # the difference between "the server is slow" and "the image starts late".
-    phases = rec.get('lcp_phases') or {}
-    if phases:
-        total = sum(v for v in phases.values() if isinstance(v, (int, float)))
+    # Rendered through the same analysis the explain_lcp tool uses, so the short
+    # version here cannot quietly drop the caveats the long version carries.
+    analysis = _lcp.explain(rec)
+    if analysis['available']:
         lines.append('  Where the LCP time goes')
-        for label, ms in phases.items():
-            share = f'{ms / total:.0%}' if total else ''
-            lines.append(f'    {label:<18} {duration("x", ms):>8}   {share}')
+        lines += ['  ' + line for line in _phase_lines(analysis)]
 
     shares = rec.get('shares') or {}
     for label, fractions in shares.items():
@@ -147,6 +147,113 @@ def crux_record(rec, url):
                         sorted(fractions.items(), key=lambda kv: -kv[1])[:3] if v >= 0.01)
         lines.append(f'  {label}: {top}')
     return '\n'.join(lines)
+
+
+def _coverage_line(analysis):
+    """Who the breakdown is actually about.
+
+    Always stated, and stated first when it is a minority, because the four
+    phases are collected only from visits whose LCP element was an image. On
+    gov.uk that is 2% of visits, and a breakdown headed "where the LCP time
+    goes" with no qualifier there describes one visit in fifty as though it
+    were all of them.
+    """
+    share = analysis.get('image_share')
+    if share is None:
+        return ('These four phases cover only the visits where the largest '
+                'element was an image. Google did not say what share of visits '
+                'that is here.')
+    text = analysis.get('text_share') or (1 - share)
+    if analysis.get('minority'):
+        return (f'MOST VISITS ARE NOT DESCRIBED BELOW. The largest element is '
+                f'an image for {share:.0%} of visits and text for {text:.0%}, '
+                f'and Google decomposes only the image ones. This is that '
+                f'{share:.0%}.')
+    return (f'The largest element is an image for {share:.0%} of visits, which '
+            f'is what these four phases are measured over.')
+
+
+def _phase_lines(analysis):
+    """The four phases with the two things that make them readable honestly."""
+    lines = ['  ' + _coverage_line(analysis), '']
+    for phase in analysis['phases']:
+        share = f"{phase['share']:.0%}" if phase['share'] is not None else ''
+        lines.append(f"  {phase['label']:<16} {duration('x', phase['ms']):>8} "
+                     f"{share:>5}   {phase['description']}")
+    if analysis.get('dominant'):
+        lines += ['', f"  Longest phase: {analysis['dominant']}."]
+
+    total, p75 = analysis['phase_total'], analysis['lcp']['p75']
+    if total is not None and p75 is not None:
+        # Printed side by side and left unreconciled on purpose. They answer
+        # different questions over different populations, so a gap is the
+        # expected state rather than a discrepancy to explain away.
+        lines += [
+            '',
+            f"  Those four total {duration('x', total)} against an LCP of "
+            f"{duration('LCP', p75)}. They do not add up to it and are not",
+            '    meant to: each is its own 75th percentile, taken over the image '
+            'visits only, and',
+            '    percentiles do not add. The shares above are of the '
+            f"{duration('x', total)}, not of the LCP."]
+    return lines
+
+
+def lcp(analysis, url):
+    """The LCP breakdown for one URL."""
+    whose = ('every page on the site' if analysis.get('scope') == 'origin'
+             else 'this page only')
+    lines = [f'{url}  [where the LCP time goes, real users — {whose}]']
+    period = analysis.get('period')
+    if period:
+        lines.append(f"  collected {period['first']} to {period['last']}")
+
+    p75 = analysis['lcp']['p75']
+    if p75 is not None:
+        rating = analysis['lcp'].get('rating')
+        lines.append(f"  LCP {duration('LCP', p75)}"
+                     + (f'   {rating}' if rating else ''))
+
+    if not analysis['available']:
+        lines.append('')
+        if analysis.get('reason') == 'no_lcp':
+            lines.append('  ' + NO_FIELD_NOTE)
+        else:
+            lines += [
+                '  No breakdown available. Google decomposes the LCP only for '
+                'visits where the',
+                '    largest element was an image, and it published none for '
+                'this site. The largest',
+                '    element is text for essentially every visit, and text has '
+                'no download phase to',
+                '    measure. That is a normal result and not a fault.']
+        return '\n'.join(lines)
+
+    lines.append('')
+    lines += _phase_lines(analysis)
+
+    ttfb = analysis.get('ttfb') or {}
+    both = ttfb.get('all_navigations'), ttfb.get('image_lcp_navigations')
+    if all(v is not None for v in both):
+        # Two different populations again, and where they diverge the image
+        # visits are being served differently from the rest.
+        lines += ['', f"  Server response {duration('x', both[0])} across all "
+                      f"visits, {duration('x', both[1])} on the image ones."]
+    elif both[0] is not None:
+        lines += ['', f"  Server response {duration('x', both[0])}."]
+    if analysis.get('rtt') is not None:
+        lines.append(f"  Network round trip {duration('x', analysis['rtt'])}, "
+                     'which is where the audience sits rather than how fast '
+                     'the server is.')
+    return '\n'.join(lines)
+
+
+LCP_NOTE = (
+    'The four phases are shares of their own total, not of the LCP, and they '
+    'are measured only over visits whose largest element was an image. This is '
+    'field data from real Chrome users, so there is no run-to-run noise here, '
+    'but it is also 28 days old at the edges and will not show a change made '
+    'this week.')
 
 
 def _histogram(buckets):

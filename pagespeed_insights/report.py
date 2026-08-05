@@ -22,7 +22,7 @@ A prettier page that quietly rounded away a spread would be worse than no page.
 """
 import html
 
-from . import brand
+from . import brand, lcp
 
 CSS = """
 /* Verdict colours, the one thing the site palette has no opinion on. */
@@ -189,14 +189,36 @@ def _field_section(entry, url):
                    f'<td>{_bar(v.get("histogram"))}</td></tr>')
     out.append('</table></div>')
 
-    phases = rec.get('lcp_phases') or {}
-    if phases:
-        total = sum(v for v in phases.values() if isinstance(v, (int, float))) or 1
-        out.append('<h3>Where the LCP time goes</h3><div class="card"><table>')
-        for label, ms in phases.items():
-            out.append(f'<tr><td>{_esc(label)}</td><td class="n">{ms:.0f} ms</td>'
-                       f'<td class="n">{ms / total:.0%}</td></tr>')
+    # Through the same analysis as the text report and the explain_lcp tool. An
+    # earlier version of this block divided each phase by the phase total and
+    # printed it under a heading that implied the LCP, with nothing saying the
+    # four are measured only over image visits. On stackoverflow.com that would
+    # have presented a 4104ms breakdown of a 1488ms LCP, covering 13% of visits,
+    # as the explanation of all of them.
+    analysis = lcp.explain(rec)
+    if analysis['available']:
+        out.append('<h3>Where the LCP time goes</h3>')
+        out.append(f'<div class="note">{_esc(render._coverage_line(analysis))}</div>')
+        out.append('<div class="card"><table><tr><th>Phase</th><th>75th percentile</th>'
+                   '<th>Share</th><th>What it is</th></tr>')
+        for phase in analysis['phases']:
+            share = ('' if phase['share'] is None else f"{phase['share']:.0%}")
+            # Same formatter as the text report. A table reading 3295 ms beside
+            # a report reading 3.29 s is two renderers disagreeing in miniature.
+            out.append(f'<tr><td>{_esc(phase["label"])}</td>'
+                       f'<td class="n">{_esc(render.duration("x", phase["ms"]))}</td>'
+                       f'<td class="n">{share}</td>'
+                       f'<td>{_esc(phase["description"])}</td></tr>')
         out.append('</table></div>')
+        total, p75 = analysis['phase_total'], analysis['lcp']['p75']
+        if total is not None and p75 is not None:
+            shown = _esc(render.duration('x', total))
+            out.append(
+                f'<div class="note">Those four total {shown} against an LCP '
+                f'of {_esc(render.duration("LCP", p75))}. They do not add up to it '
+                'and are not meant to: each is its own 75th percentile, taken over '
+                'the image visits only, and percentiles do not add. The shares '
+                f'above are of the {shown}, not of the LCP.</div>')
 
     shares = rec.get('shares') or {}
     if shares:

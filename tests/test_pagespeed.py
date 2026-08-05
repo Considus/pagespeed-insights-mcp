@@ -18,8 +18,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import setup                                                      # noqa: E402
-from pagespeed_insights import (config, crux, findings, psi, render,  # noqa: E402
-                                report)
+from pagespeed_insights import (config, crux, findings, lcp, psi,  # noqa: E402
+                                render, report)
 from pagespeed_insights.errors import CruxUnavailable             # noqa: E402
 
 
@@ -575,6 +575,193 @@ class CruxErrorClassification(unittest.TestCase):
         self.assertIn('propagating', problem.hint)
 
 
+def crux_fixture(lcp_p75, phases, image_share, ttfb=None, rtt=None):
+    """A crux.record() shaped like the real thing, from measured origins."""
+    labels = ['server response', 'load delay', 'download', 'render delay']
+    return {
+        'scope': 'origin',
+        'period': {'first': '2026-07-06', 'last': '2026-08-02'},
+        'metrics': {
+            'LCP': {'p75': lcp_p75,
+                    'histogram': [{'start': 0, 'end': 2500, 'density': 0.9},
+                                  {'start': 2500, 'end': 4000, 'density': 0.07},
+                                  {'start': 4000, 'end': None, 'density': 0.03}]},
+            **({'TTFB': {'p75': ttfb, 'histogram': []}} if ttfb is not None else {}),
+            **({'RTT': {'p75': rtt, 'histogram': []}} if rtt is not None else {}),
+        },
+        'lcp_phases': dict(zip(labels, phases)),
+        'shares': {'LCP element': {'image': image_share, 'text': 1 - image_share}},
+    }
+
+
+# Measured live on 2026-08-05. Stack Overflow is the fixture that matters: its
+# phases total 2.8x its LCP and describe an eighth of its visits, so any code
+# that treats the four as a decomposition of the headline number produces
+# obvious nonsense against it and quiet nonsense everywhere else.
+STACKOVERFLOW = crux_fixture(1488, [428, 3295, 208, 173], 0.126, ttfb=492, rtt=106)
+GOV_UK = crux_fixture(671, [322, 191, 121, 164], 0.0199, ttfb=300, rtt=85)
+BBC = crux_fixture(917, [457, 249, 85, 213], 0.82, ttfb=428, rtt=81)
+NYTIMES = crux_fixture(2292, [741, 690, 161, 279], 0.411, ttfb=579, rtt=88)
+
+
+class LcpPhasesDoNotSumToLcp(unittest.TestCase):
+    """Each phase is its own 75th percentile over the image-LCP visits, and the
+    LCP p75 is over all of them. Two populations, and percentiles do not add.
+
+    Measured across twelve origins on 2026-08-05, the sum missed the LCP every
+    time and in both directions: theguardian.com -40ms, gov.uk +127ms,
+    nytimes.com -421ms, stackoverflow.com +2616ms. Treating the four as a
+    decomposition of the headline number is wrong on every real site tested,
+    and it fails silently, because four numbers under a heading look like a
+    breakdown whatever they add up to.
+    """
+
+    def test_shares_are_of_the_phase_total_not_of_the_lcp(self):
+        out = lcp.explain(STACKOVERFLOW)
+        delay = next(p for p in out['phases'] if p['label'] == 'load delay')
+        # 3295 / 4104 = 80%. Against the LCP of 1488 it would be 221%, which is
+        # the arithmetic a reader assumes is happening unless told otherwise.
+        self.assertAlmostEqual(delay['share'], 3295 / 4104, places=6)
+        self.assertLessEqual(sum(p['share'] for p in out['phases']), 1.0000001)
+
+    def test_the_gap_is_reported_in_both_directions(self):
+        self.assertEqual(lcp.explain(STACKOVERFLOW)['gap'], 4104 - 1488)
+        self.assertEqual(lcp.explain(NYTIMES)['gap'], 1871 - 2292)
+
+    def test_the_text_states_both_totals_and_refuses_to_reconcile_them(self):
+        text = render.lcp(lcp.explain(STACKOVERFLOW), 'https://stackoverflow.com/')
+        self.assertIn('4.10 s', text)          # the phase total
+        self.assertIn('1.49 s', text)          # the LCP it does not explain
+        self.assertIn('do not add up to it', text)
+
+    def test_the_html_page_says_it_too(self):
+        page = report.build(
+            [{'url': 'https://stackoverflow.com/', 'analyses': 2, 'requested': 2,
+              'cached_replays': 0, 'short': False, 'scores': {}, 'metrics': {},
+              'field': {}, 'field_scope': None}],
+            field={'https://stackoverflow.com/': {'record': STACKOVERFLOW}},
+            inline_fonts=False)
+        self.assertIn('do not add up to it', page)
+
+    def test_the_page_and_the_text_format_a_phase_the_same_way(self):
+        """A table reading 3295 ms beside a report reading 3.29 s is two
+        renderers disagreeing in miniature, which is how they start
+        disagreeing about what a number means."""
+        analysis = lcp.explain(STACKOVERFLOW)
+        text = render.lcp(analysis, 'https://stackoverflow.com/')
+        page = report.build(
+            [{'url': 'https://stackoverflow.com/', 'analyses': 2, 'requested': 2,
+              'cached_replays': 0, 'short': False, 'scores': {}, 'metrics': {},
+              'field': {}, 'field_scope': None}],
+            field={'https://stackoverflow.com/': {'record': STACKOVERFLOW}},
+            inline_fonts=False)
+        for phase in analysis['phases']:
+            shown = render.duration('x', phase['ms'])
+            self.assertIn(shown, text)
+            self.assertIn(html.escape(shown, quote=False), page)
+
+
+class LcpPhasesDescribeOnlyImageVisits(unittest.TestCase):
+    """Every sub-part is named `largest_contentful_paint_image_*` and CrUX
+    publishes them whatever the split. gov.uk's largest element is text for 98%
+    of visits and the four phases still come back, describing the other 2%.
+
+    A breakdown headed "where the LCP time goes" with nothing qualifying it
+    describes one visit in fifty as though it were all of them.
+    """
+
+    def test_a_minority_is_flagged_as_one(self):
+        self.assertTrue(lcp.explain(GOV_UK)['minority'])
+        self.assertTrue(lcp.explain(STACKOVERFLOW)['minority'])
+        self.assertFalse(lcp.explain(BBC)['minority'])
+
+    def test_the_warning_leads_when_it_is_a_minority(self):
+        text = render.lcp(lcp.explain(GOV_UK), 'https://www.gov.uk/')
+        self.assertIn('MOST VISITS ARE NOT DESCRIBED', text)
+        self.assertIn('2%', text)
+
+    def test_the_share_is_stated_even_when_it_is_a_majority(self):
+        text = render.lcp(lcp.explain(BBC), 'https://www.bbc.co.uk/')
+        self.assertNotIn('MOST VISITS ARE NOT DESCRIBED', text)
+        self.assertIn('82%', text)
+
+    def test_the_short_form_beside_the_other_field_data_carries_it_too(self):
+        """render.crux_record prints the same four phases in a smaller block.
+        It used to print them bare, which is where a reader would meet them
+        first."""
+        text = render.crux_record(GOV_UK, 'https://www.gov.uk/')
+        self.assertIn('MOST VISITS ARE NOT DESCRIBED', text)
+
+    def test_the_html_page_carries_it_too(self):
+        page = report.build(
+            [{'url': 'https://www.gov.uk/', 'analyses': 2, 'requested': 2,
+              'cached_replays': 0, 'short': False, 'scores': {}, 'metrics': {},
+              'field': {}, 'field_scope': None}],
+            field={'https://www.gov.uk/': {'record': GOV_UK}}, inline_fonts=False)
+        self.assertIn('MOST VISITS ARE NOT DESCRIBED', page)
+
+
+class LcpPhaseReading(unittest.TestCase):
+    def test_phases_stay_in_timeline_order_not_size_order(self):
+        """They are sequential. Sorted by size they stop being a timeline, and
+        'load delay' before 'server response' is a load nobody can picture."""
+        out = lcp.explain(STACKOVERFLOW)
+        self.assertEqual([p['label'] for p in out['phases']],
+                         ['server response', 'load delay', 'download', 'render delay'])
+
+    def test_the_longest_phase_is_named(self):
+        self.assertEqual(lcp.explain(STACKOVERFLOW)['dominant'], 'load delay')
+        self.assertEqual(lcp.explain(BBC)['dominant'], 'server response')
+
+    def test_the_rating_comes_from_the_histogram_bins_not_a_hardcoded_number(self):
+        """The thresholds are Google's and are already in the response. A second
+        copy here would be a number that rots without failing."""
+        rec = crux_fixture(3000, [1, 1, 1, 1], 0.9)
+        self.assertEqual(lcp.explain(rec)['lcp']['rating'], 'needs improvement')
+        # Same p75, bins moved: the rating must follow the response.
+        rec['metrics']['LCP']['histogram'][0]['end'] = 4000
+        rec['metrics']['LCP']['histogram'][1] = {'start': 4000, 'end': 6000}
+        self.assertEqual(lcp.explain(rec)['lcp']['rating'], 'good')
+
+    def test_the_two_server_response_figures_are_not_conflated(self):
+        """One is every navigation, the other only the image ones. On nytimes
+        they differ by 162ms, which is a fact about the site."""
+        out = lcp.explain(NYTIMES)
+        self.assertEqual(out['ttfb']['all_navigations'], 579)
+        self.assertEqual(out['ttfb']['image_lcp_navigations'], 741)
+        text = render.lcp(out, 'https://www.nytimes.com/')
+        self.assertIn('579 ms', text)
+        self.assertIn('741 ms', text)
+
+
+class LcpWithNothingToExplain(unittest.TestCase):
+    """Most sites have no field data, and some have field data but no image-LCP
+    navigations. Those are different answers and neither is a failure."""
+
+    def test_no_phases_is_explained_rather_than_left_blank(self):
+        rec = {'scope': 'origin', 'metrics': {'LCP': {'p75': 900, 'histogram': []}},
+               'lcp_phases': {}, 'shares': {}}
+        out = lcp.explain(rec)
+        self.assertFalse(out['available'])
+        self.assertEqual(out['reason'], 'no_phases')
+        text = render.lcp(out, 'https://x.test/')
+        self.assertIn('not a fault', text)
+        self.assertIn('900 ms', text)
+
+    def test_no_lcp_at_all_says_there_is_no_field_data(self):
+        out = lcp.explain({'scope': 'origin', 'metrics': {}, 'lcp_phases': {}})
+        self.assertEqual(out['reason'], 'no_lcp')
+        self.assertIn('anonymity threshold', render.lcp(out, 'https://x.test/'))
+
+    def test_a_missing_image_share_does_not_claim_one(self):
+        rec = crux_fixture(900, [100, 100, 100, 100], 0.5)
+        del rec['shares']['LCP element']
+        out = lcp.explain(rec)
+        self.assertIsNone(out['minority'])
+        self.assertIn('did not say what share',
+                      render.lcp(out, 'https://x.test/'))
+
+
 class Rendering(unittest.TestCase):
     def test_cls_renders_to_three_places_and_durations_do_not(self):
         self.assertEqual(render.duration('CLS', 0.083), '0.083')
@@ -743,7 +930,7 @@ class McpProtocol(unittest.TestCase):
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
                          {'check_pagespeed', 'report', 'diagnose_page',
-                          'field_data', 'diagnose'})
+                          'field_data', 'explain_lcp', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])

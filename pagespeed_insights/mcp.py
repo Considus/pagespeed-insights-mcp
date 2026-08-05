@@ -25,7 +25,7 @@ import json
 import sys
 import time
 
-from . import __version__, config, crux, psi, render, report
+from . import __version__, config, crux, lcp, psi, render, report
 from .errors import CruxUnavailable, PageSpeedError
 
 SERVER_NAME = 'pagespeed-insights'
@@ -242,6 +242,33 @@ def tool_field_data(args, progress=None):
             {'type': 'text', 'text': json.dumps(payload, indent=2)}]
 
 
+def tool_explain_lcp(args, progress=None):
+    """Which of four phases owns a slow LCP. Field data, so it answers at once."""
+    urls = _urls(args.get('urls'))
+    key = config.api_key()
+
+    texts, payload = [], {}
+    for url in urls:
+        try:
+            rec = crux.record(url, key)
+        except CruxUnavailable as e:
+            payload[url] = {'unavailable': {'reason': e.reason,
+                                            'message': e.message, 'hint': e.hint}}
+            texts.append(f'{url}  [where the LCP time goes]\n  {e.message}\n  {e.hint}')
+            continue
+        analysis = lcp.explain(rec)
+        payload[url] = analysis
+        texts.append(render.lcp(analysis, url))
+
+    # Only when there is a breakdown to caveat. Appended to a "no field data"
+    # answer it explains the reading of four numbers nobody was shown.
+    body = '\n\n'.join(texts)
+    if any(a.get('available') for a in payload.values()):
+        body += '\n\n' + render.LCP_NOTE
+    return [{'type': 'text', 'text': body},
+            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+
 def tool_diagnose(args, progress=None):
     """What is configured and what actually works, without disclosing the key."""
     key = config.api_key()
@@ -386,6 +413,33 @@ TOOLS = [
             'additionalProperties': False,
         },
         'handler': tool_field_data,
+    },
+    {
+        'name': 'explain_lcp',
+        'description':
+            'Break a slow Largest Contentful Paint into the four phases it is '
+            'made of: server response, then the delay before the browser starts '
+            'fetching the largest image, then the download, then the delay '
+            'before it is painted. Turns one number into which part of the load '
+            'owns it. FAST, one Chrome UX Report call, no Lighthouse runs and '
+            'no noise to average away. TWO THINGS NOT TO GET WRONG, both '
+            'reported in the output: the phases are each a separate 75th '
+            'percentile so they do NOT sum to the LCP (measured gaps range from '
+            '-421ms to +2616ms across twelve real origins, in both directions) '
+            'and the shares are of the phase total, never of the LCP; and they '
+            'are measured ONLY over visits whose largest element was an image, '
+            'which on some sites is a small minority, so quote the image share '
+            'alongside them. Needs an API key and real-user data, which many '
+            'small sites do not have.',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'urls': {'type': 'array', 'items': {'type': 'string'},
+                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
+            },
+            'additionalProperties': False,
+        },
+        'handler': tool_explain_lcp,
     },
     {
         'name': 'diagnose',
