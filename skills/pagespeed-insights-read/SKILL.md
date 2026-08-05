@@ -165,6 +165,29 @@ collecting genuinely distinct measurements. Do not offer to speed it up by
 reducing `runs` below the default and then quote the result as though it were
 the same thing.
 
+## Fewer analyses than asked for is the headline, not a footnote
+
+You will sometimes end up with fewer analyses than you wanted, because the
+tool's time budget ran out or a call failed. When that happens, the count leads
+the answer.
+
+**A smaller sample produces a narrower spread, which reads as more certainty
+rather than less.** Two analyses that happen to land close together look like a
+precise measurement and are nothing of the kind. The same page across five
+analyses would almost certainly show a wider range.
+
+- Say how many analyses the number is actually a median of. The tool reports it.
+- Describe a narrow spread from a small sample as a floor on the noise, not as
+  the width of it.
+- Do not compare a 2-analysis result against a 5-analysis one and treat the
+  spreads as equivalent.
+
+If a call times out, say so plainly rather than quietly retrying with fewer
+runs. The server sends a progress notification every ten seconds so that a
+multi-minute measurement survives a client's request timeout, so a timeout means
+something is wrong rather than something is slow. That is worth reporting rather
+than working around.
+
 ## Phrases to avoid
 
 - "improved by N points" without both spreads
