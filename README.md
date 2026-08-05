@@ -166,9 +166,19 @@ path.
 
 | Tool | What it does |
 |---|---|
-| `check_pagespeed` | Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). Collects rather than counts requests, so 5 takes roughly 150s. |
+| `report` | Everything in one call, and the one most people want. Scores with their spread, real-user data if Google has any, and what is failing ranked by what fixing it is worth. Returns a self-contained HTML page as well, to save or forward. |
+| `check_pagespeed` | Scores only. Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). |
+| `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. |
 | `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
 | `diagnose` | Whether the key works and whether the Chrome UX Report is reachable, without disclosing the key. |
+
+### The skill
+
+`skill/SKILL.md` teaches an assistant how to read the results. The server
+refuses to state a number without its uncertainty; it cannot stop an assistant
+dropping that uncertainty on the way to an answer, and the most common way that
+goes wrong is adding four savings estimates together and promising nine seconds.
+Install it alongside the server if your assistant supports skills.
 
 A 5-analysis check on 2 URLs takes several minutes, and asking harder will not
 speed it up. Google re-analyses a URL roughly once a minute whatever you do, so
@@ -204,8 +214,15 @@ directory is the thing that rule exists to prevent.
 pagespeed https://example.com/
 pagespeed --runs 3 --strategy both https://example.com/
 pagespeed --field --history https://example.com/
+pagespeed --findings https://example.com/
+pagespeed --field --report report.html https://example.com/
 pagespeed --json https://example.com/
 ```
+
+`--report` writes one self-contained HTML page: no scripts, no network, nothing
+external. It opens from a file and survives being emailed, which matters because
+the largest finding is often a hosting or third-party decision belonging to
+somebody other than whoever ran the check.
 
 With no URL it uses whatever you saved during setup.
 

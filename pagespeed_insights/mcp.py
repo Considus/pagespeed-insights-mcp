@@ -25,7 +25,7 @@ import json
 import sys
 import time
 
-from . import __version__, config, crux, psi, render
+from . import __version__, config, crux, psi, render, report
 from .errors import CruxUnavailable, PageSpeedError
 
 SERVER_NAME = 'pagespeed-insights'
@@ -148,6 +148,66 @@ def tool_diagnose_page(args, progress=None):
             {'type': 'text', 'text': json.dumps(payload, indent=2)}]
 
 
+def tool_report(args, progress=None):
+    """The whole answer in one call, and the page to send on.
+
+    Three tools existed and a person wanting "how is my site and what should I
+    do" had to call all three and stitch the results. That is work this should
+    be doing for them.
+    """
+    urls = _urls(args.get('urls'))
+    runs = args.get('runs', 3)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
+        raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. Below '
+                        'two there is nothing to check a finding against.')
+    want_html = args.get('html', True)
+    key = config.api_key()
+    done = [0]
+
+    def tick(distinct, _t, url, strat):
+        done[0] += 1
+        if progress:
+            progress(done[0], len(urls) * runs,
+                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+    texts, results, field, findings_by_url = [], [], {}, {}
+    for url in urls:
+        res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
+        results.append(res)
+        findings_by_url[url] = res.get('findings') or []
+        texts.append(render.result(res))
+
+        try:
+            rec = crux.record(url, key)
+            field[url] = {'record': rec}
+            texts.append(render.crux_record(rec, url))
+        except CruxUnavailable as e:
+            field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
+            # Not an error. Most sites have no field data and saying so plainly
+            # is the point, because a gap beside a good lab score reads as proof.
+            texts.append(f'{url}  [real users]\n  {e.message}\n  {e.hint}')
+
+        texts.append(render.findings(findings_by_url[url], url))
+        for warning in res.get('warnings') or []:
+            texts.append(f'  Google warns: {warning}')
+
+    blocks = [{'type': 'text',
+               'text': '\n\n'.join(texts) + '\n\n' + render.NOISE_NOTE
+                       + '\n' + render.FINDINGS_NOTE}]
+    if want_html:
+        # Fonts off. They are 145KB of base64, 90% of the page and about 37,000
+        # tokens, which is most of a context window spent on typography. On disk
+        # the CLI keeps them; through here the page falls back to the system
+        # stack and costs a few thousand.
+        page = report.build(results, field=field, findings_by_url=findings_by_url,
+                            generated=time.strftime('%d %B %Y'), inline_fonts=False)
+        blocks.append({'type': 'text', 'text': page})
+    blocks.append({'type': 'text', 'text': json.dumps(
+        {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+         'results': results, 'field': field}, indent=2)})
+    return blocks
+
+
 def tool_field_data(args, progress=None):
     urls = _urls(args.get('urls'))
     want_history = bool(args.get('history'))
@@ -250,6 +310,32 @@ TOOLS = [
             'additionalProperties': False,
         },
         'handler': tool_check_pagespeed,
+    },
+    {
+        'name': 'report',
+        'description':
+            'The whole picture for a page in one call: scores with their spread, '
+            'real-user data if Google has any, and what is failing ranked by what '
+            'fixing it is worth. Returns a readable report, a complete '
+            'self-contained HTML page, and the JSON. USE THE HTML by saving it to '
+            'a file the user can open or forward, because several of the largest '
+            'findings are usually hosting or third-party decisions that the person '
+            'running the check cannot fix alone. Set html false if they only want '
+            'the answer in conversation. SLOW, several minutes, and costs no extra '
+            'API calls over check_pagespeed.',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'urls': {'type': 'array', 'items': {'type': 'string'},
+                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
+                'runs': {'type': 'integer', 'minimum': 2, 'maximum': MAX_RUNS,
+                         'description': 'Distinct analyses to collect. Default 3.'},
+                'html': {'type': 'boolean',
+                         'description': 'Include the HTML page. Default true.'},
+            },
+            'additionalProperties': False,
+        },
+        'handler': tool_report,
     },
     {
         'name': 'diagnose_page',

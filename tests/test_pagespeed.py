@@ -18,7 +18,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import setup                                                      # noqa: E402
-from pagespeed_insights import config, crux, findings, psi, render  # noqa: E402
+from pagespeed_insights import (config, crux, findings, psi, render,  # noqa: E402
+                                report)
 from pagespeed_insights.errors import CruxUnavailable             # noqa: E402
 
 
@@ -605,6 +606,65 @@ class Rendering(unittest.TestCase):
         self.assertIn('too little data', text)
 
 
+class HtmlReport(unittest.TestCase):
+    """The page has two jobs and one of them is being small enough to send."""
+
+    RESULT = [{'url': 'https://x.test/', 'analyses': 3, 'requested': 3,
+               'cached_replays': 2, 'calls': 5, 'elapsed': 140.0, 'short': False,
+               'scores': {'performance': {'median': 50, 'min': 45, 'max': 55},
+                          'seo': {'median': 100, 'min': 100, 'max': 100}},
+               'metrics': {'LCP': {'median': 2000, 'min': 1900, 'max': 2200}},
+               'field': {}, 'field_scope': None,
+               'warnings': ['redirected to https://y.test/']}]
+
+    def test_it_loads_nothing_from_the_network(self):
+        """It is opened offline, from a file, by someone who may not be the
+        person who ran the check."""
+        page = report.build(self.RESULT)
+        for tag in ('<script', '<link', '<img', 'src="http'):
+            self.assertNotIn(tag, page)
+
+    def test_fonts_are_ninety_per_cent_of_it_so_the_mcp_drops_them(self):
+        """145KB of base64 is about 37,000 tokens. On disk that is free; through
+        an assistant it is most of a context window spent on typography."""
+        big, small = report.build(self.RESULT), report.build(self.RESULT, inline_fonts=False)
+        self.assertGreater(len(big), 8 * len(small))
+        self.assertNotIn('@font-face', small)
+
+    def test_the_mark_and_palette_survive_either_way(self):
+        """A page with no logo does not look like it came from anywhere."""
+        for page in (report.build(self.RESULT),
+                     report.build(self.RESULT, inline_fonts=False)):
+            self.assertIn('<svg', page)
+            self.assertIn('--stellar', page)
+
+    def test_the_spread_reaches_the_page(self):
+        """A prettier page that quietly rounded away the spread would be worse
+        than no page."""
+        page = report.build(self.RESULT, inline_fonts=False)
+        self.assertIn('45', page)
+        self.assertIn('55', page)
+
+    def test_a_score_with_no_spread_says_so_rather_than_looking_certain(self):
+        page = report.build(self.RESULT, inline_fonts=False)
+        self.assertIn('no spread', page)
+
+    def test_googles_warning_is_carried_verbatim(self):
+        self.assertIn('redirected to https://y.test/',
+                      report.build(self.RESULT, inline_fonts=False))
+
+    def test_no_field_data_is_explained_not_left_blank(self):
+        page = report.build(self.RESULT, inline_fonts=False,
+                            field={'https://x.test/':
+                                   {'unavailable': {'reason': 'no_data'}}})
+        self.assertIn('not a fault', page)
+
+    def test_a_url_cannot_inject_markup(self):
+        hostile = [dict(self.RESULT[0], url='https://x.test/<script>alert(1)</script>')]
+        page = report.build(hostile, inline_fonts=False)
+        self.assertNotIn('<script>alert', page)
+
+
 class Config(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.mkdtemp()
@@ -682,7 +742,8 @@ class McpProtocol(unittest.TestCase):
         out = self._call({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
-                         {'check_pagespeed', 'diagnose_page', 'field_data', 'diagnose'})
+                         {'check_pagespeed', 'report', 'diagnose_page',
+                          'field_data', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])
