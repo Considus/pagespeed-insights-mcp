@@ -945,6 +945,60 @@ class Baselines(unittest.TestCase):
         self.assertFalse(config.clear_baseline('https://x.test/', 'mobile'))
 
 
+class TheSkillIsInstallable(unittest.TestCase):
+    """The command a skill answers to comes from its DIRECTORY name, not from
+    the `name` in its frontmatter, which is only a display label for a personal
+    or project skill.
+
+    This shipped as `skill/SKILL.md`, so anyone following the obvious step of
+    copying the folder into ~/.claude/skills got a skill called `/skill`. It
+    installed, it loaded, and it answered to the wrong name, which is the kind
+    of failure nobody reports because it looks like it worked.
+    """
+
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+    def skill_dir(self):
+        return self.ROOT / 'skills' / 'reading-pagespeed'
+
+    def test_the_folder_is_named_for_the_command_it_creates(self):
+        self.assertTrue((self.skill_dir() / 'SKILL.md').is_file(),
+                        'skills/reading-pagespeed/SKILL.md is the path the '
+                        'install instructions tell people to link')
+
+    def test_the_frontmatter_name_matches_the_folder(self):
+        """They serve different purposes and a mismatch is invisible until
+        someone types the wrong command, so they are pinned together."""
+        text = (self.skill_dir() / 'SKILL.md').read_text(encoding='utf-8')
+        declared = re.search(r'^name:\s*(\S+)\s*$', text, re.M)
+        self.assertIsNotNone(declared, 'SKILL.md has no name in its frontmatter')
+        self.assertEqual(declared.group(1), self.skill_dir().name)
+
+    def test_the_readme_points_at_the_path_that_exists(self):
+        readme = (self.ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertIn('skills/reading-pagespeed', readme)
+        self.assertNotIn('`skill/SKILL.md`', readme)
+
+    def test_setup_tells_people_the_skill_exists(self):
+        """It was shipped with one vague README line and no mention in setup at
+        all, so the only people who found it were the ones reading the repo."""
+        page = setup.done_page(['https://example.com/'], {'available': True})
+        self.assertIn('reading-pagespeed', page)
+
+    def test_every_platform_gets_an_install_block(self):
+        blocks = setup.skill_blocks()
+        for heading in ('macOS', 'Linux', 'Windows'):
+            self.assertIn(f'>{heading}', blocks)
+
+    def test_the_link_target_keeps_the_directory_name(self):
+        """A link named anything else silently renames the command."""
+        targets = re.findall(r'ln -s \S+ (\S+)', setup.skill_blocks())
+        self.assertTrue(targets, 'no link command found')
+        for target in targets:
+            self.assertEqual(re.sub(r'<.*$', '', target),
+                             '~/.claude/skills/reading-pagespeed')
+
+
 class Rendering(unittest.TestCase):
     def test_cls_renders_to_three_places_and_durations_do_not(self):
         self.assertEqual(render.duration('CLS', 0.083), '0.083')

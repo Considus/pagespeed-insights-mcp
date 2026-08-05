@@ -207,6 +207,32 @@ def install_blocks():
             + _block(('linux',), 'Linux', 'your terminal (bash)', posix('linux', '~/.bashrc')))
 
 
+def skill_blocks():
+    """Linking the skill into Claude Code, per platform.
+
+    Windows gets a copy rather than a link. mklink needs Developer Mode or an
+    elevated shell, and telling someone to reopen their terminal as
+    administrator to install an optional skill is how an optional thing stops
+    being installed at all. The copy costs them a re-copy after a pull, which
+    is said plainly rather than hidden.
+    """
+    def link(key):
+        return (f'mkdir -p ~/.claude/skills\n'
+                f'ln -s {_folder(key)}/skills/reading-pagespeed '
+                f'~/.claude/skills/reading-pagespeed')
+
+    windows = (f'mkdir "%USERPROFILE%\\.claude\\skills" 2&gt;nul\n'
+               f'xcopy /E /I "{_folder("nt")}\\skills\\reading-pagespeed" '
+               f'"%USERPROFILE%\\.claude\\skills\\reading-pagespeed"')
+
+    return (_block(('darwin',), 'macOS', 'Terminal (zsh)', link('darwin'))
+            + _block(('linux',), 'Linux', 'your terminal (bash)', link('linux'))
+            + _block(('nt',), 'Windows', 'Command Prompt', windows)
+            + '<p class="help">Windows gets a copy rather than a link, because a '
+              'symlink there needs Developer Mode or an elevated shell. Re-copy it '
+              'after a pull to pick up changes.</p>')
+
+
 def usage_blocks():
     """Running it, which is two blocks rather than three.
 
@@ -235,6 +261,9 @@ How did https://example.com score on mobile and desktop?
 Check my saved sites and tell me if anything has regressed
 What did real Chrome users experience on https://example.com?
 Has https://example.com got slower for real people over the last six months?
+What is wrong with https://example.com and what should I fix first?
+Why is the LCP on https://example.com so slow?
+I have made a change to https://example.com, did it help?
 Is my PageSpeed setup working?"""
 
 
@@ -525,7 +554,7 @@ def done_page(urls, crux_state):
 
 <h2 class="sub">Then just ask</h2>
 <p class="help">There is no command and nothing to remember. Once the server is
-   registered your assistant has three tools and picks between them from what you
+   registered your assistant has seven tools and picks between them from what you
    asked for, so ask in the words you would have used anyway.</p>
 <div class="blocklabel">Example prompts</div>
 <pre class="paste">{html.escape(EXAMPLE_PROMPTS)}</pre>
@@ -544,6 +573,23 @@ def done_page(urls, crux_state):
 <p class="help">A check takes a few minutes. It is the median of several runs
    rather than one, because a single run disagrees with itself enough to invent
    a regression that was never there.</p>
+
+<h2 class="sub">Optional, and worth two minutes</h2>
+<p class="help">The folder you installed into has a <code>skills</code> directory
+   with one skill in it, <b>reading-pagespeed</b>. The server refuses to state a
+   number without saying how much it wanders. It cannot stop an assistant dropping
+   that on the way to an answer, and the usual way that goes wrong is adding four
+   savings estimates together and promising you nine seconds. The skill is what
+   stops it. Everything works without it.</p>
+<p class="help">In Claude Code, link it so it updates when you pull. The folder has
+   to keep its name, because the command comes from the directory rather than from
+   anything inside the file.</p>
+{skill_blocks()}
+<p class="help">Claude Desktop and claude.ai sync skills from your account instead
+   of reading your disk, so the link above will not reach them. Add it under
+   <b>Customize</b> in the Desktop sidebar, or from the skills settings on
+   claude.ai, and it follows you into every session. To check it landed, ask your
+   assistant to list its skills.</p>
 
 <h2 class="sub">Changing your saved sites</h2>
 <p class="help">The sites above are the default when you do not name one. To add,
@@ -564,8 +610,8 @@ def done_page(urls, crux_state):
 {path_note()}
 
 <h2 class="sub">Then run it</h2>
-<p class="help">Once, above. From then on, these. Same three tools your assistant
-   has, with the measurement printed to the terminal instead.</p>
+<p class="help">Once, above. From then on, these. Same tools your assistant has,
+   with the measurement printed to the terminal instead.</p>
 {usage_blocks()}
 
 <p class="help">You can close this tab. Setup has already shut down.</p>

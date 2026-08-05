@@ -207,11 +207,42 @@ compared, because a 28-day rolling window cannot show a change made this week.
 
 ### The skill
 
-`skill/SKILL.md` teaches an assistant how to read the results. The server
-refuses to state a number without its uncertainty. It cannot stop an assistant
-dropping that uncertainty on the way to an answer, and the most common way that
-goes wrong is adding four savings estimates together and promising nine seconds.
-Install it alongside the server if your assistant supports skills.
+`skills/reading-pagespeed/` teaches an assistant how to read the results. The
+server refuses to state a number without its uncertainty. It cannot stop an
+assistant dropping that uncertainty on the way to an answer, and the most common
+way that goes wrong is adding four savings estimates together and promising nine
+seconds.
+
+It is optional. Everything works without it, and the tools carry the same
+warnings in their own descriptions. The skill is what stops those warnings being
+paraphrased away on the journey to an answer.
+
+**Claude Code.** Link it, so it updates when you pull.
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s "$PWD/skills/reading-pagespeed" ~/.claude/skills/reading-pagespeed
+```
+
+Copy it instead if you would rather it did not move under you.
+
+```bash
+cp -r skills/reading-pagespeed ~/.claude/skills/
+```
+
+Either way the folder has to keep its name. The command comes from the directory,
+not from anything inside the file, so `~/.claude/skills/reading-pagespeed/SKILL.md`
+gives you `/reading-pagespeed` and a folder named anything else gives you that
+instead. For one project rather than everywhere, use `.claude/skills/` in the
+project.
+
+**Claude Desktop and claude.ai.** These sync skills from your account rather than
+reading your disk, so the link above will not reach them. Add it under
+**Customize** in the Desktop sidebar, or from the skills settings on claude.ai,
+and it follows you to every session including Cowork.
+
+To check it landed, ask your assistant to list its skills, or type
+`/reading-pagespeed`.
 
 A 5-analysis check on 2 URLs takes several minutes, and asking harder will not
 speed it up. Google re-analyses a URL roughly once a minute whatever you do, so
