@@ -289,9 +289,20 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
     caller is told the real count, which is the only number that makes the
     spread mean anything.
 
-    progress(distinct, target, url, strategy) fires whenever the distinct count
-    changes, so a slow collection can show it is getting somewhere rather than
-    looking hung.
+    progress(distinct, target, url, strategy, fresh) fires after EVERY call,
+    with `fresh` saying whether that call produced a new distinct analysis.
+
+    Firing on every call rather than only on new analyses is not cosmetic, it
+    is what makes long collections possible at all. MCP clients reset their
+    request timeout when a progress notification arrives, and Google produces a
+    genuinely new analysis only about once a minute. A callback that fired only
+    on new analyses therefore beat at roughly 60s intervals, which is at or past
+    the default timeout of most clients: measured on 2026-08-05, a 2-run report
+    emitted its two notifications 58 seconds apart and the client gave up.
+    Polling every 15s gives a heartbeat four times inside that window.
+
+    Callers that count analyses must therefore check `fresh` rather than
+    counting calls to this.
     """
     if budget is None:
         budget = max(MIN_BUDGET, runs * BUDGET_PER_ANALYSIS)
@@ -322,14 +333,19 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
         # they hand out the same analysis under different timestamps, so the
         # measurements themselves are what decide whether this is new.
         marks = (analysis.get('fetchTime'), _fingerprint(analysis))
-        if not any(m and m in seen for m in marks):
+        fresh = not any(m and m in seen for m in marks)
+        if fresh:
             seen.update(m for m in marks if m)
             lab.append(analysis)
             if with_findings:
                 finding_records.append(_findings.record(lhr))
                 last_lhr = lhr
-            if progress:
-                progress(len(lab), runs, url, strategy)
+        # EVERY call, not only the ones that produced something new. See the
+        # note on the callback below: a heartbeat that only beats when an
+        # analysis lands beats about once a minute, which is the timeout it
+        # exists to prevent.
+        if progress:
+            progress(len(lab), runs, url, strategy, fresh)
 
         if field_scope is None:      # identical across runs; take it once
             field_scope, field_metrics, field_subject = field_of(payload)

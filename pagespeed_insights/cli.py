@@ -32,9 +32,16 @@ from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
 EXIT = {QuotaExhausted: 3, CredentialRejected: 4, PageUnreachable: 5, Unavailable: 6}
 
 
-def _progress(distinct, target, url, strategy):
-    print(f'  {url} [{strategy}] {distinct}/{target} distinct analyses...',
-          file=sys.stderr, flush=True)
+def _progress(distinct, target, url, strategy, fresh):
+    """Only the calls that produced something get a line.
+
+    The MCP face notifies on every poll to hold the client's timeout open. A
+    terminal has no timeout to hold open, and a line every 15 seconds saying
+    the number has not moved is noise.
+    """
+    if fresh:
+        print(f'  {url} [{strategy}] {distinct}/{target} distinct analyses...',
+              file=sys.stderr, flush=True)
 
 
 def _field(url, key, want_history, quiet):

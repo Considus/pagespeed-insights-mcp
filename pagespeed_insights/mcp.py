@@ -16,13 +16,34 @@ write to stderr (the CLI's progress) is not reachable from here.
 
 Long calls get killed. A five-run check on two URLs is several minutes, which
 is past the default timeout of most clients. Clients reset that timeout on
-progress notifications, so every run emits one when the caller supplied a
+progress notifications, so this emits them whenever the caller supplied a
 progress token. That is what makes an honest multi-minute measurement possible
 at all — without it the only way to answer in time is to run once and quote
 noise, which is what everything else does.
+
+HOW OFTEN IS THE WHOLE PROBLEM, and getting it wrong made the feature useless
+while looking implemented. Notifications originally fired only when a new
+distinct analysis landed. Google produces one about once a minute, so the
+heartbeat beat at roughly the interval it existed to survive: measured on
+2026-08-05, a two-run report emitted its two notifications 58 seconds apart and
+every run through a real client timed out. The tool looked broken and the
+guard was the reason.
+
+Two things fix it, and both are needed. The measurement callback now fires on
+every poll rather than every new analysis, which is every 15s BETWEEN calls.
+And a keepalive thread beats every 10s regardless, because the callback cannot
+fire DURING a call and a single PageSpeed call blocks while Lighthouse runs,
+which on a slow page is exactly the site being measured. Same report after:
+19 notifications, longest silence 10.3s.
+
+That thread is the one place this package writes to stdout from anywhere but
+the main loop, so every writer goes through a lock. Two interleaved writes are
+one corrupt line and a server that appears to die for no reason, which is the
+first hazard above arriving through the fix for the second.
 """
 import json
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -96,10 +117,13 @@ def tool_check_pagespeed(args, progress=None):
     target = jobs * runs
     done = [0]
 
-    def tick(distinct, _target, url, strat):
-        # Fires when a NEW distinct analysis lands, not per request, so the
-        # count reflects measurements collected rather than calls spent.
-        done[0] += 1
+    def tick(distinct, _target, url, strat, fresh):
+        # Counts ANALYSES but notifies on every CALL. The count has to reflect
+        # measurements collected rather than requests spent, and the
+        # notification has to arrive often enough to hold the client's timeout
+        # open, and those are different rates.
+        if fresh:
+            done[0] += 1
         if progress:
             progress(done[0], target,
                      f'{url} [{strat}] {distinct}/{runs} distinct analyses')
@@ -128,8 +152,10 @@ def tool_diagnose_page(args, progress=None):
     key = config.api_key()
     done = [0]
 
-    def tick(distinct, _t, url, strat):
-        done[0] += 1
+    def tick(distinct, _t, url, strat, fresh):
+        # Counts analyses, notifies on every call. See psi.measure.
+        if fresh:
+            done[0] += 1
         if progress:
             progress(done[0], len(urls) * runs,
                      f'{url} [{strat}] {distinct}/{runs} distinct analyses')
@@ -187,8 +213,10 @@ def tool_report(args, progress=None):
     key = config.api_key()
     done = [0]
 
-    def tick(distinct, _t, url, strat):
-        done[0] += 1
+    def tick(distinct, _t, url, strat, fresh):
+        # Counts analyses, notifies on every call. See psi.measure.
+        if fresh:
+            done[0] += 1
         if progress:
             progress(done[0], len(urls) * runs,
                      f'{url} [{strat}] {distinct}/{runs} distinct analyses')
@@ -325,8 +353,10 @@ def tool_compare(args, progress=None):
     key = config.api_key()
     done = [0]
 
-    def tick(distinct, _t, url, strat):
-        done[0] += 1
+    def tick(distinct, _t, url, strat, fresh):
+        # Counts analyses, notifies on every call. See psi.measure.
+        if fresh:
+            done[0] += 1
         if progress:
             progress(done[0], len(urls) * runs,
                      f'{url} [{strat}] {distinct}/{runs} distinct analyses')
@@ -622,9 +652,68 @@ HANDLERS = {t['name']: t['handler'] for t in TOOLS}
 TOOL_DEFS = [{k: t[k] for k in ('name', 'description', 'inputSchema')} for t in TOOLS]
 
 
+_WRITE = threading.Lock()
+
+
 def _send(msg):
-    sys.stdout.write(json.dumps(msg) + '\n')
-    sys.stdout.flush()
+    # stdout IS the protocol, and the keepalive below writes from another
+    # thread. Two interleaved writes produce one corrupt line and the client
+    # reports the server dying for no visible reason, which is the first hazard
+    # named at the top of this module.
+    with _WRITE:
+        sys.stdout.write(json.dumps(msg) + '\n')
+        sys.stdout.flush()
+
+
+# How often to prove the server is still alive. Well inside the 60s default
+# timeout of most clients, and cheap: one JSON line.
+KEEPALIVE_SECONDS = 10
+
+
+class _Keepalive:
+    """A progress notification on a timer, for as long as a tool is running.
+
+    The real progress callback fires once per poll, which is every 15 seconds
+    BETWEEN calls. It cannot fire DURING one, and a single PageSpeed call
+    blocks while Lighthouse runs, which on a slow page is exactly the site
+    somebody is measuring. Measured on 2026-08-05, a report with no keepalive
+    left 58 seconds of silence and every client run timed out.
+
+    So this beats regardless of what the measurement is doing. It reports the
+    last real progress message rather than inventing one, so a client showing
+    progress text shows something true.
+    """
+
+    def __init__(self, token, total):
+        self.token = token
+        self.total = total
+        self.done = 0
+        self.message = 'starting'
+        self._stop = threading.Event()
+        self._thread = None
+
+    def note(self, done, total, message):
+        self.done, self.total, self.message = done, total, message
+
+    def _beat(self):
+        while not self._stop.wait(KEEPALIVE_SECONDS):
+            _send({'jsonrpc': '2.0', 'method': 'notifications/progress',
+                   'params': {'progressToken': self.token, 'progress': self.done,
+                              'total': self.total, 'message': self.message}})
+
+    def __enter__(self):
+        if self.token is not None:
+            self._thread = threading.Thread(target=self._beat, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        if self._thread:
+            # Joined before the result is sent, so a beat can never arrive
+            # after the response it belongs to.
+            self._thread.join(timeout=KEEPALIVE_SECONDS + 1)
+        return False
 
 
 def _result(id_, result):
@@ -635,11 +724,15 @@ def _error(id_, code, message):
     _send({'jsonrpc': '2.0', 'id': id_, 'error': {'code': code, 'message': message}})
 
 
-def _progress_fn(token):
+def _progress_fn(token, alive=None):
     if token is None:
         return None
 
     def emit(done, total, what):
+        # Told to the keepalive as well, so its beats carry the latest real
+        # message rather than a stale or invented one.
+        if alive is not None:
+            alive.note(done, total, what)
         _send({'jsonrpc': '2.0', 'method': 'notifications/progress',
                'params': {'progressToken': token, 'progress': done, 'total': total,
                           'message': what}})
@@ -667,9 +760,13 @@ def handle(req):
         if handler is None:
             _error(id_, -32602, f'Unknown tool: {name}')
             return
-        progress = _progress_fn((params.get('_meta') or {}).get('progressToken'))
+        token = (params.get('_meta') or {}).get('progressToken')
         try:
-            _result(id_, {'content': handler(params.get('arguments') or {}, progress)})
+            # The keepalive holds the client's timeout open even while a single
+            # PageSpeed call is blocking, which the per-poll callback cannot.
+            with _Keepalive(token, 0) as alive:
+                progress = _progress_fn(token, alive)
+                _result(id_, {'content': handler(params.get('arguments') or {}, progress)})
         except (ToolError, PageSpeedError) as e:
             text = e.message if isinstance(e, PageSpeedError) else str(e)
             hint = getattr(e, 'hint', '')
