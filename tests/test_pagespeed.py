@@ -18,8 +18,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import setup                                                      # noqa: E402
-from pagespeed_insights import (config, crux, findings, lcp, psi,  # noqa: E402
-                                render, report)
+from pagespeed_insights import (compare, config, crux, findings,  # noqa: E402
+                                lcp, psi, render, report)
 from pagespeed_insights.errors import CruxUnavailable             # noqa: E402
 
 
@@ -762,6 +762,189 @@ class LcpWithNothingToExplain(unittest.TestCase):
                       render.lcp(out, 'https://x.test/'))
 
 
+def spread(median, low, high):
+    return {'median': median, 'min': low, 'max': high}
+
+
+def measurement(analyses=3, scores=None, metrics=None, found=(), version='13.0.0'):
+    return {'url': 'https://x.test/', 'strategy': 'mobile', 'analyses': analyses,
+            'recorded': '2026-08-01T09:00:00+0000',
+            'scores': scores or {}, 'metrics': metrics or {},
+            'lighthouse_version': version,
+            'findings': [{'id': i, 'title': i.replace('-', ' '),
+                          'category': 'performance', 'impact': 100} for i in found]}
+
+
+class AChangeSmallerThanTheNoiseIsNotAChange(unittest.TestCase):
+    """The figures here are from one unchanged page measured three times on
+    2026-08-04: performance ran 27 to 37, TBT ran 824ms to 3.05s.
+
+    A tool comparing medians alone would call that page improved or regressed
+    depending on the afternoon, and would be equally confident either way. This
+    is the test that stops it.
+    """
+
+    def test_overlapping_ranges_are_not_a_change(self):
+        v = compare.verdict(spread(33, 27, 37), spread(36, 30, 40), 3, 3, True)
+        self.assertEqual(v['verdict'], 'no measurable change')
+
+    def test_touching_ranges_are_not_a_change_either(self):
+        """A single shared point is still an overlap. Anything else makes the
+        verdict turn on one sample landing on a boundary."""
+        v = compare.verdict(spread(33, 27, 37), spread(45, 37, 50), 3, 3, True)
+        self.assertEqual(v['verdict'], 'no measurable change')
+
+    def test_disjoint_ranges_are_a_change_and_get_a_direction(self):
+        v = compare.verdict(spread(33, 27, 37), spread(60, 55, 65), 3, 3, True)
+        self.assertEqual(v['verdict'], 'better')
+
+    def test_a_score_falling_is_worse_and_a_metric_falling_is_better(self):
+        """Up is good for a score out of 100 and bad for every duration here.
+        One direction rule for both would be right half the time."""
+        down = (spread(60, 55, 65), spread(33, 27, 37), 3, 3)
+        self.assertEqual(compare.verdict(*down, higher_is_better=True)['verdict'],
+                         'worse')
+        self.assertEqual(compare.verdict(*down, higher_is_better=False)['verdict'],
+                         'better')
+
+    def test_a_single_analysis_gets_no_verdict_at_all(self):
+        """One analysis has min == max, so two of them always look disjoint.
+        Without this guard, two anecdotes that differ report as a real change.
+        """
+        v = compare.verdict(spread(33, 33, 33), spread(60, 60, 60), 1, 1, True)
+        self.assertEqual(v['verdict'], 'unknown')
+        self.assertIn('single analysis', v['why'])
+
+    def test_one_side_being_a_single_analysis_is_enough_to_refuse(self):
+        v = compare.verdict(spread(33, 27, 37), spread(60, 60, 60), 3, 1, True)
+        self.assertEqual(v['verdict'], 'unknown')
+
+    def test_the_guaranteed_change_is_smaller_than_the_median_change(self):
+        """Both are reported and they are not the same number. The medians
+        differing is the headline; the ranges only guarantee the gap between
+        their nearest edges, and that is the one to quote to someone who will
+        hold you to it."""
+        v = compare.verdict(spread(33, 27, 37), spread(60, 55, 65), 3, 3, True)
+        self.assertEqual(v['median_change'], 27)
+        self.assertEqual(v['at_least'], 55 - 37)
+        self.assertLess(v['at_least'], abs(v['median_change']))
+
+
+class ComparingTwoMeasurements(unittest.TestCase):
+    def test_the_noisy_real_world_case_reports_nothing_moved(self):
+        before = measurement(scores={'performance': spread(33, 27, 37)},
+                             metrics={'TBT': spread(1800, 824, 3050)})
+        after = measurement(scores={'performance': spread(36, 30, 40)},
+                            metrics={'TBT': spread(1500, 900, 2600)})
+        out = compare.results(before, after)
+        self.assertEqual(out['scores']['performance']['verdict'],
+                         'no measurable change')
+        self.assertEqual(out['metrics']['TBT']['verdict'], 'no measurable change')
+        text = render.comparison(out)
+        self.assertIn('no measurable change', text)
+        for word in ('improved', 'regression', 'faster', 'slower'):
+            self.assertNotIn(word, text.lower())
+
+    def test_a_lighthouse_version_change_is_flagged_as_a_confound(self):
+        """It reweights and revises audits between versions, so it moves a
+        score without the page moving. It is the one confound that looks
+        exactly like a result."""
+        out = compare.results(measurement(version='12.0.0'),
+                              measurement(version='13.0.0'))
+        self.assertTrue(any('Lighthouse changed' in n for n in out['notes']))
+
+    def test_the_same_version_is_not_flagged(self):
+        self.assertEqual(compare.results(measurement(), measurement())['notes'], [])
+
+    def test_a_metric_missing_from_one_side_is_skipped_not_guessed(self):
+        out = compare.results(measurement(metrics={'LCP': spread(2, 1, 3)}),
+                              measurement(metrics={'LCP': spread(2, 1, 3),
+                                                   'CLS': spread(0.1, 0, 0.2)}))
+        self.assertIn('LCP', out['metrics'])
+        self.assertNotIn('CLS', out['metrics'])
+
+    def test_the_comparison_is_json_serialisable(self):
+        json.dumps(compare.results(measurement(), measurement()))
+
+
+class ComparingFindings(unittest.TestCase):
+    """A finding is only reported when it fails in EVERY distinct analysis, and
+    that threshold makes the two directions unequal. Something newly listed
+    failed every time it was looked at. Something that dropped off passed at
+    least once, which is weaker than fixed."""
+
+    def test_findings_are_split_three_ways(self):
+        out = compare.findings(
+            [{'id': 'redirects', 'title': 'Avoid redirects'},
+             {'id': 'unused-css', 'title': 'Unused CSS'}],
+            [{'id': 'unused-css', 'title': 'Unused CSS'},
+             {'id': 'uses-http2', 'title': 'Use HTTP/2'}])
+        self.assertEqual([f['id'] for f in out['gone']], ['redirects'])
+        self.assertEqual([f['id'] for f in out['new']], ['uses-http2'])
+        self.assertEqual([f['id'] for f in out['remaining']], ['unused-css'])
+
+    def test_the_report_never_calls_a_dropped_finding_fixed(self):
+        out = compare.results(measurement(found=['redirects']), measurement())
+        text = render.comparison(out)
+        self.assertIn('No longer failing every analysis', text)
+        self.assertIn('not the same as fixed', text)
+        self.assertNotIn('Fixed', text)
+
+
+class Baselines(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_a_baseline_round_trips(self):
+        config.save_baseline('https://x.test/', 'mobile',
+                             compare.snapshot(measurement()))
+        self.assertIsNotNone(config.get_baseline('https://x.test/', 'mobile'))
+
+    def test_mobile_and_desktop_are_separate_baselines(self):
+        """Comparing a mobile run against a desktop baseline would report the
+        difference between two simulated devices as the effect of a change."""
+        config.save_baseline('https://x.test/', 'mobile',
+                             compare.snapshot(measurement()))
+        self.assertIsNone(config.get_baseline('https://x.test/', 'desktop'))
+
+    def test_saving_a_baseline_does_not_touch_the_key(self):
+        """Separate files on purpose. The key is secret and changes almost
+        never; baselines are not secret and change constantly."""
+        config.save({'api_key': 'AIza-secret', 'urls': ['https://x.test/']})
+        config.save_baseline('https://x.test/', 'mobile',
+                             compare.snapshot(measurement()))
+        self.assertEqual(config.api_key(), 'AIza-secret')
+        self.assertNotIn('AIza-secret', config.baselines_path().read_text())
+
+    def test_the_snapshot_drops_the_prose_it_does_not_need(self):
+        """A full result carries Google's remediation text and the offending
+        elements for every finding. None of that answers whether something
+        moved, and all of it would be stored forever."""
+        rich = measurement(found=['redirects'])
+        rich['findings'][0]['description'] = 'x' * 5000
+        snap = compare.snapshot(rich)
+        self.assertNotIn('description', snap['findings'][0])
+        self.assertEqual(snap['findings'][0]['title'], 'redirects')
+
+    def test_a_corrupt_baselines_file_is_survived_not_fatal(self):
+        config.baselines_path().write_text('{ not json')
+        self.assertEqual(config.load_baselines(), {})
+
+    def test_clearing_reports_whether_there_was_anything_to_clear(self):
+        config.save_baseline('https://x.test/', 'mobile',
+                             compare.snapshot(measurement()))
+        self.assertTrue(config.clear_baseline('https://x.test/', 'mobile'))
+        self.assertFalse(config.clear_baseline('https://x.test/', 'mobile'))
+
+
 class Rendering(unittest.TestCase):
     def test_cls_renders_to_three_places_and_durations_do_not(self):
         self.assertEqual(render.duration('CLS', 0.083), '0.083')
@@ -930,7 +1113,7 @@ class McpProtocol(unittest.TestCase):
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
                          {'check_pagespeed', 'report', 'diagnose_page',
-                          'field_data', 'explain_lcp', 'diagnose'})
+                          'field_data', 'explain_lcp', 'compare', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])

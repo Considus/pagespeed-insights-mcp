@@ -256,6 +256,68 @@ LCP_NOTE = (
     'this week.')
 
 
+COMPARE_NOTE = (
+    'A verdict is only given where the two ranges do not overlap at all. That '
+    'is deliberately conservative and it will miss small real improvements, '
+    'because reporting a change that was noise is the worse of the two '
+    'mistakes. Field data is not compared: the Chrome UX Report is a 28-day '
+    'rolling window and cannot show a change made this week.')
+
+
+def _change(label, v, numeric=False):
+    """One metric or score, before against after, with its verdict."""
+    fmt = ((lambda x: f'{x:.0f}') if numeric else (lambda x: duration(label, x)))
+    before, after = v['before'], v['after']
+    line = (f"    {label:<16} {fmt(before['median']):>8} -> {fmt(after['median']):>8}"
+            f"   {v['verdict']}")
+    detail = [f"      was {fmt(before['min'])}-{fmt(before['max'])}, "
+              f"now {fmt(after['min'])}-{fmt(after['max'])}"]
+    if v['verdict'] in ('better', 'worse'):
+        # Two numbers, and the smaller one is the one to quote. The medians
+        # differing is the headline; the ranges only guarantee the gap between
+        # their nearest edges.
+        detail.append(f"      medians differ by {fmt(abs(v['median_change']))}, "
+                      f"and the ranges guarantee at least {fmt(v['at_least'])}")
+    return '\n'.join([line] + detail)
+
+
+def comparison(cmp, before_when=None):
+    """Two measurements of one URL, and whether anything actually moved."""
+    lines = [f"{cmp['url']}  [{cmp['strategy']}, before against after]"]
+    when = f' recorded {before_when}' if before_when else ''
+    lines.append(f"  {cmp['before_analyses']} distinct analyses{when}, against "
+                 f"{cmp['after_analyses']} just now")
+
+    for note in cmp['notes']:
+        lines.append(f'  NOTE: {note}')
+
+    if cmp['scores']:
+        lines.append('  Scores')
+        for name, v in cmp['scores'].items():
+            lines.append(_change(name, v, numeric=True))
+    if cmp['metrics']:
+        lines.append('  Metrics')
+        for label in ('LCP', 'CLS', 'TBT', 'FCP', 'Speed Index'):
+            if label in cmp['metrics']:
+                lines.append(_change(label, cmp['metrics'][label]))
+
+    found = cmp.get('findings') or {}
+    if found.get('gone'):
+        lines.append('  No longer failing every analysis')
+        for f in found['gone']:
+            lines.append(f"    {f['title']}")
+        # The threshold cuts both ways and the weaker direction needs saying.
+        lines.append('    These passed at least once this time, which is not the '
+                     'same as fixed.')
+    if found.get('new'):
+        lines.append('  Newly failing every analysis')
+        for f in found['new']:
+            lines.append(f"    {f['title']}")
+    if found.get('remaining'):
+        lines.append(f"  Still failing: {len(found['remaining'])}")
+    return '\n'.join(lines)
+
+
 def _histogram(buckets):
     """The good / needs-improvement / poor split, as words.
 

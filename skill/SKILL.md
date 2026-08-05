@@ -31,6 +31,9 @@ So:
   they overlap. If they overlap, the honest answer is "no measurable change",
   not a hedged yes.
 
+Use `compare` rather than doing this arithmetic yourself. It holds the baseline,
+applies the overlap rule, and will refuse a verdict where you might not.
+
 ## Never add savings together
 
 Findings carry Google's estimate of what each fix returns, per metric. **These
@@ -140,6 +143,10 @@ saying otherwise sets up a failure the reader will discover later.
 - **`explain_lcp`** when LCP specifically is the problem. It is the one fast
   tool here, one call and no Lighthouse runs, so reach for it before committing
   someone to a multi-minute check. It needs an API key and real-user data.
+- **`compare`** for "did that help". Call it BEFORE the user makes a change as
+  well as after: the first call records the baseline and there is no way to
+  reconstruct one afterwards. If they have already made the change and no
+  baseline exists, say so plainly rather than measuring once and guessing.
 - **`diagnose`** when anything looks wrong. It separates a configuration
   problem from a slow page in about two seconds.
 
@@ -161,3 +168,8 @@ the same thing.
 - any percentage of an LCP phase against the LCP rather than against the phase
   total
 - the LCP phases quoted without saying what share of visits they cover
+- "no measurable change" softened into "a slight improvement" or "trending in
+  the right direction". It means the tool could not tell, and saying otherwise
+  is how a noisy result becomes a claim someone repeats
+- a finding that dropped off the list described as "fixed". It means the fault
+  passed at least once this time, which is weaker
