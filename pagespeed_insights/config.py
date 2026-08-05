@@ -119,3 +119,64 @@ def api_key(explicit=None):
 
 def default_urls():
     return list(load().get('urls') or [])
+
+
+# --------------------------------------------------------------------------
+# Baselines
+#
+# A comparison needs a "before", and the before happened days ago in another
+# session. So it is kept on disk, in its own file rather than in settings.json.
+# That file holds the API key at 0600, and rewriting it every time a
+# measurement lands is a way to eventually lose a key to a half-written file.
+# Baselines are not secret and they change often; the key is secret and changes
+# almost never. Different lifetimes, different files.
+# --------------------------------------------------------------------------
+
+def baselines_path():
+    return config_dir() / 'baselines.json'
+
+
+def _baseline_key(url, strategy):
+    # Strategy is part of the identity. A mobile run against a desktop baseline
+    # would report the difference between two simulated devices as though it
+    # were the effect of a change someone made.
+    return f'{strategy}|{url}'
+
+
+def load_baselines():
+    try:
+        with open(baselines_path(), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_baseline(url, strategy):
+    return load_baselines().get(_baseline_key(url, strategy))
+
+
+def save_baseline(url, strategy, snapshot):
+    """Atomic, like save(), and for the same reason."""
+    data = load_baselines()
+    data[_baseline_key(url, strategy)] = snapshot
+    path = baselines_path()
+    tmp = path.with_suffix('.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+    return path
+
+
+def clear_baseline(url, strategy):
+    data = load_baselines()
+    if data.pop(_baseline_key(url, strategy), None) is None:
+        return False
+    path = baselines_path()
+    tmp = path.with_suffix('.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+    return True
