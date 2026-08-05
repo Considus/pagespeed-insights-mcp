@@ -171,7 +171,8 @@ path.
 | `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. |
 | `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
 | `explain_lcp` | Which of four phases owns a slow Largest Contentful Paint: server response, the wait before the browser starts fetching the largest image, the download, then the wait before it is painted. One call, answers at once. |
-| `diagnose` | Whether the key works and whether the Chrome UX Report is reachable, without disclosing the key. |
+| `compare` | Did the change actually help. Measures now and compares against a saved baseline, giving a verdict only where the two ranges do not overlap. |
+| `diagnose` | Whether the key works, whether the Chrome UX Report is reachable, and which baselines are held, without disclosing the key. |
 
 Two things about `explain_lcp` are worth knowing before you read one, and both
 are printed in every answer. The four phases do **not** add up to the LCP, and
@@ -185,6 +186,24 @@ That second point is the useful part as often as it is the caveat. On one large
 site the LCP looks a comfortable 1.5 seconds, and the eighth of visits with an
 image LCP are waiting 3.3 seconds before the image so much as starts
 downloading. Nothing in the headline number shows that.
+
+`compare` answers the question the findings leave open, which is whether the
+change you made did anything. The first call on a URL records a baseline and
+compares nothing, because there is nothing to compare against yet. Make the
+change, call it again, and it measures afresh and reports what moved.
+
+It gives a verdict only where the two min-max ranges do not overlap at all.
+That is deliberately conservative and it will miss small real improvements. The
+reason is that the two possible mistakes are not equally bad: telling you
+nothing moved when something did costs you a little confidence, while telling
+you something improved when it was noise is a claim you might repeat to a
+client. Where a change is real it reports both the difference in medians and
+the smaller figure the ranges actually guarantee, and the guaranteed one is the
+number to quote.
+
+Baselines are held in `baselines.json` beside the settings, keyed by URL and
+strategy, and are never moved unless you ask. Field data is deliberately not
+compared, because a 28-day rolling window cannot show a change made this week.
 
 ### The skill
 
@@ -230,6 +249,8 @@ pagespeed --runs 3 --strategy both https://example.com/
 pagespeed --field --history https://example.com/
 pagespeed --lcp https://example.com/
 pagespeed --findings https://example.com/
+pagespeed --compare https://example.com/
+pagespeed --baselines
 pagespeed --field --report report.html https://example.com/
 pagespeed --json https://example.com/
 ```

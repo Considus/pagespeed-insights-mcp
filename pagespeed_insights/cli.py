@@ -4,6 +4,7 @@
     python3 -m pagespeed_insights --runs 3 --strategy both https://example.com
     python3 -m pagespeed_insights --field --history https://example.com
     python3 -m pagespeed_insights --lcp https://example.com
+    python3 -m pagespeed_insights --compare https://example.com
     python3 -m pagespeed_insights --json https://example.com
 
 EXIT CODES, and why they are not all 1. Something running this in CI needs to
@@ -24,7 +25,7 @@ import pathlib
 import sys
 import time
 
-from . import __version__, config, crux, lcp, psi, render, report
+from . import __version__, compare, config, crux, lcp, psi, render, report
 from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
                      PageUnreachable, QuotaExhausted, Unavailable)
 
@@ -82,6 +83,30 @@ def _lcp(url, key, quiet):
     return analysis
 
 
+def _compare(res, url, strategy, replace, quiet):
+    """Compare this run against the baseline, or record the first one."""
+    res['recorded'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    snap = compare.snapshot(res)
+    baseline = config.get_baseline(url, strategy)
+
+    if baseline is None or replace:
+        config.save_baseline(url, strategy, snap)
+        if not quiet:
+            print(f'\nBaseline recorded for {url} [{strategy}]'
+                  + ('.' if baseline is None else ', replacing the previous one.'))
+            print('Make your change, then run this again to see whether it '
+                  'moved anything.')
+        return {'baseline_recorded': snap}
+
+    result = compare.results(baseline, snap)
+    if not quiet:
+        print('\n' + render.comparison(result, baseline.get('recorded')))
+        print('\n  ' + render.COMPARE_NOTE)
+        print('  The baseline is unchanged. Pass --save-baseline to move it '
+              'to this measurement.')
+    return {'comparison': result, 'baseline': baseline, 'now': snap}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='pagespeed_insights',
@@ -110,6 +135,15 @@ def main(argv=None):
     parser.add_argument('--lcp', action='store_true',
                         help='also break the LCP into its four phases, from '
                              'real-user data. One extra call, answers at once')
+    parser.add_argument('--compare', action='store_true',
+                        help='compare this run against the saved baseline for '
+                             'the same URL and strategy. The first time, it '
+                             'records the baseline instead')
+    parser.add_argument('--save-baseline', action='store_true',
+                        help='with --compare, replace the baseline with this '
+                             'run rather than keeping the original')
+    parser.add_argument('--baselines', action='store_true',
+                        help='list the saved baselines and exit')
     parser.add_argument('--history', action='store_true',
                         help='with --field, also fetch the p75 time series')
     parser.add_argument('--json', action='store_true', help='machine-readable output')
@@ -120,9 +154,32 @@ def main(argv=None):
     parser.add_argument('--version', action='version', version=__version__)
     args = parser.parse_args(argv)
 
+    if args.baselines:
+        held = config.load_baselines()
+        if not held:
+            print('No baselines. The first --compare on a URL records one.')
+        for entry in held.values():
+            print(f"{entry.get('url')} [{entry.get('strategy')}]  recorded "
+                  f"{entry.get('recorded') or 'unknown'}, "
+                  f"{entry.get('analyses')} analyses")
+        return 0
+
     urls = args.urls or config.default_urls()
     if not urls:
         parser.error('no URLs given and none saved. Pass a URL, or run setup.py.')
+    if args.compare and args.strategy == 'both':
+        parser.error('--compare takes one strategy, since a baseline is per '
+                     'strategy. Use --strategy mobile or --strategy desktop.')
+    if args.compare and args.runs < 2:
+        parser.error('--compare needs at least 2 runs. One analysis has no '
+                     'spread, so there is nothing to tell a real change from '
+                     'run-to-run noise.')
+    if args.save_baseline and not args.compare:
+        parser.error('--save-baseline works with --compare.')
+    if args.compare:
+        # The findings comparison is the useful half of the answer, and it
+        # costs no extra API calls.
+        args.findings = True
     if args.runs < 1:
         parser.error('--runs must be at least 1')
     if args.history and not args.field:
@@ -141,7 +198,8 @@ def main(argv=None):
                          '     exhausted. A 429 from here is Google, not your site.'),
               file=sys.stderr)
 
-    payload = {'version': __version__, 'results': [], 'field': {}, 'lcp': {}}
+    payload = {'version': __version__, 'results': [], 'field': {}, 'lcp': {},
+               'comparison': {}}
     try:
         for url in urls:
             for strategy in strategies:
@@ -157,6 +215,9 @@ def main(argv=None):
                         print('\n  ' + render.FINDINGS_NOTE)
                     for w in res.get('warnings') or []:
                         print(f'\n  Google warns: {w}')
+                if args.compare:
+                    payload['comparison'][url] = _compare(
+                        res, url, strategy, args.save_baseline, args.json)
             if args.field:
                 payload['field'][url] = _field(url, key, args.history, args.json)
             if args.lcp:

@@ -25,7 +25,7 @@ import json
 import sys
 import time
 
-from . import __version__, config, crux, lcp, psi, render, report
+from . import __version__, compare, config, crux, lcp, psi, render, report
 from .errors import CruxUnavailable, PageSpeedError
 
 SERVER_NAME = 'pagespeed-insights'
@@ -269,6 +269,65 @@ def tool_explain_lcp(args, progress=None):
             {'type': 'text', 'text': json.dumps(payload, indent=2)}]
 
 
+def tool_compare(args, progress=None):
+    """Measure now and say whether anything moved since the baseline.
+
+    First call on a URL records the baseline and says so. That is the honest
+    shape of the job: there is nothing to compare against until someone has
+    measured, changed something, and measured again.
+    """
+    urls = _urls(args.get('urls'))
+    strategy = args.get('strategy') or 'mobile'
+    if strategy not in ('mobile', 'desktop'):
+        raise ToolError("strategy must be 'mobile' or 'desktop'.")
+    runs = args.get('runs', 3)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
+        raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. One '
+                        'analysis has no spread, so there would be nothing to '
+                        'tell a real change from run-to-run noise.')
+    replace = bool(args.get('save_baseline'))
+    key = config.api_key()
+    done = [0]
+
+    def tick(distinct, _t, url, strat):
+        done[0] += 1
+        if progress:
+            progress(done[0], len(urls) * runs,
+                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+    texts, payload, compared = [], {}, False
+    for url in urls:
+        res = psi.measure(url, strategy, runs, key, progress=tick, with_findings=True)
+        res['recorded'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+        snap = compare.snapshot(res)
+        baseline = config.get_baseline(url, strategy)
+
+        if baseline is None or replace:
+            config.save_baseline(url, strategy, snap)
+            payload[url] = {'baseline_recorded': snap}
+            texts.append(render.result(res))
+            texts.append(
+                f'  Baseline recorded for {url} [{strategy}]'
+                + ('.' if baseline is None else ', replacing the previous one.')
+                + '\n  Make your change, then run this again to see whether it '
+                  'moved anything.')
+            continue
+
+        compared = True
+        result = compare.results(baseline, snap)
+        payload[url] = {'comparison': result, 'baseline': baseline, 'now': snap}
+        texts.append(render.comparison(result, baseline.get('recorded')))
+        texts.append('  The baseline is unchanged, so the next run compares '
+                     'against the same starting point. Pass save_baseline to '
+                     'move it to this measurement.')
+
+    body = '\n\n'.join(texts)
+    if compared:
+        body += '\n\n' + render.COMPARE_NOTE
+    return [{'type': 'text', 'text': body},
+            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+
 def tool_diagnose(args, progress=None):
     """What is configured and what actually works, without disclosing the key."""
     key = config.api_key()
@@ -305,6 +364,19 @@ def tool_diagnose(args, progress=None):
 
     saved = config.default_urls()
     lines.append('Saved URLs: ' + (', '.join(saved) if saved else 'none'))
+
+    # Stale baselines are the quiet failure mode of compare: a comparison
+    # against something measured months ago looks exactly like one against
+    # something measured this morning.
+    baselines = config.load_baselines()
+    if baselines:
+        lines.append('Baselines held for comparison:')
+        for entry in baselines.values():
+            lines.append(f"  {entry.get('url')} [{entry.get('strategy')}]"
+                         f"  recorded {entry.get('recorded') or 'unknown'}"
+                         f", {entry.get('analyses')} analyses")
+    else:
+        lines.append('Baselines: none. The first compare on a URL records one.')
     return [{'type': 'text', 'text': '\n'.join(lines)}]
 
 
@@ -440,6 +512,44 @@ TOOLS = [
             'additionalProperties': False,
         },
         'handler': tool_explain_lcp,
+    },
+    {
+        'name': 'compare',
+        'description':
+            'Answer "did that change actually help". Measures now and compares '
+            'against a saved baseline for the same URL and strategy. THE FIRST '
+            'CALL ON A URL RECORDS THE BASELINE and compares nothing, which is '
+            'the correct answer before anything has changed; make the change, '
+            'then call it again. A verdict is only given where the two min-max '
+            'ranges do NOT overlap: on an unchanged page the performance score '
+            'has been measured running 27 to 37 and Total Blocking Time 824ms '
+            'to 3.05s, so comparing medians alone reports improvements that are '
+            'just the instrument moving. Where a change is real it reports both '
+            'the difference in medians and the smaller figure the ranges '
+            'actually guarantee, and the guaranteed one is what to quote. Also '
+            'reports which findings stopped and started failing, and flags a '
+            'Lighthouse version change, which moves scores without the page '
+            'moving. Does NOT compare field data, which is a 28-day window and '
+            'cannot show a change made this week. SLOW, several minutes.',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'urls': {'type': 'array', 'items': {'type': 'string'},
+                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
+                'strategy': {'type': 'string', 'enum': ['mobile', 'desktop'],
+                             'description': 'Part of the baseline identity. '
+                                            'Default mobile.'},
+                'runs': {'type': 'integer', 'minimum': 2, 'maximum': MAX_RUNS,
+                         'description': 'Distinct analyses each side. Default 3.'},
+                'save_baseline': {'type': 'boolean',
+                                  'description': 'Replace the baseline with this '
+                                                 'measurement. Default false, so '
+                                                 'repeated calls keep comparing '
+                                                 'against the same starting point.'},
+            },
+            'additionalProperties': False,
+        },
+        'handler': tool_compare,
     },
     {
         'name': 'diagnose',
