@@ -293,6 +293,17 @@ nothing external. It opens from a file and survives being emailed, which matters
 the largest finding is often a hosting or third-party decision belonging to
 somebody other than whoever ran the check.
 
+Your assistant can save the same page. Ask it for a report and it will ask where
+you want the file. The server writes only to a folder you name and only when you
+ask, it will not create one, and it never overwrites an existing report, because
+somebody comparing a before against an after wants both. Name no folder and it
+goes to a `reports` folder beside the settings, and the full path comes back so
+you can find it.
+
+Saved files keep their embedded fonts and run about 150KB. The copy that comes
+back in conversation drops them, because 145KB of base64 is most of a context
+window spent on typography. Same renderer either way.
+
 With no URL it uses whatever you saved during setup.
 
 Exit codes are split by what went wrong, so something running this in CI can
