@@ -207,8 +207,8 @@ compared, because a 28-day rolling window cannot show a change made this week.
 
 ### The skill
 
-`skills/reading-pagespeed/` teaches an assistant how to read the results. The
-server refuses to state a number without its uncertainty. It cannot stop an
+`skills/pagespeed-insights-read/` teaches an assistant how to read the results.
+The server refuses to state a number without its uncertainty. It cannot stop an
 assistant dropping that uncertainty on the way to an answer, and the most common
 way that goes wrong is adding four savings estimates together and promising nine
 seconds.
@@ -217,32 +217,34 @@ It is optional. Everything works without it, and the tools carry the same
 warnings in their own descriptions. The skill is what stops those warnings being
 paraphrased away on the journey to an answer.
 
-**Claude Code.** Link it, so it updates when you pull.
+Every client keeps skills somewhere different, some sync them from an account
+rather than reading your disk, and some have no such thing at all. So rather than
+printing one client's path, ask yours. Paste this in, with the folder path filled
+in from wherever you cloned this.
 
-```bash
-mkdir -p ~/.claude/skills
-ln -s "$PWD/skills/reading-pagespeed" ~/.claude/skills/reading-pagespeed
+```
+I have a skill folder on this computer and I would like you to install it into
+whichever client you are running inside, if that client supports skills.
+
+  Skill folder = /path/to/pagespeed-insights-mcp/skills/pagespeed-insights-read
+
+Please:
+1. Work out whether this client supports skills, and where it keeps them on this
+   machine.
+2. Install the folder there, keeping its folder name unchanged. Most clients take
+   the name of the folder as the name of the skill, so renaming it renames the
+   skill.
+3. Prefer linking to the folder above rather than copying it, if this client
+   follows links, so it updates when I next pull. Copy it if not.
+4. If this client syncs skills from an account rather than reading this disk, do
+   not guess at a path. Tell me where to add it instead.
+5. Tell me what you did and whether I need to restart the app.
+
+If this client has no concept of skills, say so plainly and do nothing.
+Everything works without it.
 ```
 
-Copy it instead if you would rather it did not move under you.
-
-```bash
-cp -r skills/reading-pagespeed ~/.claude/skills/
-```
-
-Either way the folder has to keep its name. The command comes from the directory,
-not from anything inside the file, so `~/.claude/skills/reading-pagespeed/SKILL.md`
-gives you `/reading-pagespeed` and a folder named anything else gives you that
-instead. For one project rather than everywhere, use `.claude/skills/` in the
-project.
-
-**Claude Desktop and claude.ai.** These sync skills from your account rather than
-reading your disk, so the link above will not reach them. Add it under
-**Customize** in the Desktop sidebar, or from the skills settings on claude.ai,
-and it follows you to every session including Cowork.
-
-To check it landed, ask your assistant to list its skills, or type
-`/reading-pagespeed`.
+Setup prints the same prompt with your actual path already in it.
 
 A 5-analysis check on 2 URLs takes several minutes, and asking harder will not
 speed it up. Google re-analyses a URL roughly once a minute whatever you do, so
