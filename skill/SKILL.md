@@ -1,6 +1,6 @@
 ---
 name: reading-pagespeed
-description: How to read what the PageSpeed Insights MCP returns without overclaiming. Use whenever answering a question about site speed, Core Web Vitals, Lighthouse scores, or what to fix on a page, and whenever the pagespeed-insights MCP tools are called. Covers when a change is real, why savings must not be added together, why lab and field figures differ, and what to do when a site has no real-user data.
+description: How to read what the PageSpeed Insights MCP returns without overclaiming. Use whenever answering a question about site speed, Core Web Vitals, Lighthouse scores, LCP phases, or what to fix on a page, and whenever the pagespeed-insights MCP tools are called. Covers when a change is real, why savings must not be added together, why the four LCP phases neither sum to the LCP nor describe every visit, why lab and field figures differ, and what to do when a site has no real-user data.
 ---
 
 # Reading PageSpeed results
@@ -42,6 +42,38 @@ do not compose.** Two fixes claiming 6750ms and 1200ms off LCP do not return
   score, because the curve is not linear.
 - The ordering is the useful part. Say "fix this first", not "this will save
   you nine seconds".
+
+## The LCP phases do not add up to the LCP
+
+`explain_lcp` returns four phases. They are each a separate 75th percentile, so
+they do **not** sum to the LCP and are not meant to. Measured across twelve real
+origins, the sum missed every time and in both directions, from 40ms under to
+2616ms over.
+
+- Never present the four as a decomposition of the LCP, and never compute a
+  phase as a percentage of it. The tool gives shares of the phase total; use
+  those.
+- Do not describe the difference as an error, a discrepancy, or something to
+  investigate. It is the expected result of adding percentiles, which is not a
+  thing that works.
+- The useful output is which phase is largest, not the arithmetic.
+
+## The LCP phases describe only visits where the largest element was an image
+
+Google collects the four sub-parts only from navigations whose LCP element was
+an image, and publishes them regardless of how rare that is. On one government
+site the largest element is text for 98% of visits and the phases still come
+back, describing the other 2%.
+
+- Always quote the image share alongside the phases. The tool reports it.
+- When it is a minority, say so before the numbers, not after.
+- Never say "your LCP breaks down as" when the breakdown covers a fraction of
+  visits. Say which fraction.
+
+This is a finding as often as it is a caveat. On one large site the headline LCP
+is a comfortable 1.5 seconds while the eighth of visits with an image LCP wait
+3.3 seconds before the image starts downloading. The headline number cannot show
+that, and the split is the only reason it is visible.
 
 ## Lab and field answer different questions
 
@@ -105,6 +137,9 @@ saying otherwise sets up a failure the reader will discover later.
 - **`check_pagespeed`** for scores alone.
 - **`field_data`** for real users only, with `history` for six months of weekly
   figures.
+- **`explain_lcp`** when LCP specifically is the problem. It is the one fast
+  tool here, one call and no Lighthouse runs, so reach for it before committing
+  someone to a multi-minute check. It needs an API key and real-user data.
 - **`diagnose`** when anything looks wrong. It separates a configuration
   problem from a slow page in about two seconds.
 
@@ -121,3 +156,8 @@ the same thing.
 - "your site is slow" when only lab data says so and field data disagrees
 - "you should enable CrUX"
 - "fix these and you will reach 90"
+- "your LCP of 2.4s breaks down as..." followed by four numbers totalling
+  something else
+- any percentage of an LCP phase against the LCP rather than against the phase
+  total
+- the LCP phases quoted without saying what share of visits they cover

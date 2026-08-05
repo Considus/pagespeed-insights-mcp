@@ -170,7 +170,21 @@ path.
 | `check_pagespeed` | Scores only. Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). |
 | `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. |
 | `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
+| `explain_lcp` | Which of four phases owns a slow Largest Contentful Paint: server response, the wait before the browser starts fetching the largest image, the download, then the wait before it is painted. One call, answers at once. |
 | `diagnose` | Whether the key works and whether the Chrome UX Report is reachable, without disclosing the key. |
+
+Two things about `explain_lcp` are worth knowing before you read one, and both
+are printed in every answer. The four phases do **not** add up to the LCP, and
+the gap is not rounding: across twelve real origins the sum missed by anything
+from 40ms under to 2.6 seconds over. Each phase is its own 75th percentile, and
+percentiles do not add. And the phases are measured only over visits where the
+largest element was an image, which on some sites is a small minority, so the
+answer always says what share of visits it is describing.
+
+That second point is the useful part as often as it is the caveat. On one large
+site the LCP looks a comfortable 1.5 seconds, and the eighth of visits with an
+image LCP are waiting 3.3 seconds before the image so much as starts
+downloading. Nothing in the headline number shows that.
 
 ### The skill
 
@@ -214,6 +228,7 @@ directory is the thing that rule exists to prevent.
 pagespeed https://example.com/
 pagespeed --runs 3 --strategy both https://example.com/
 pagespeed --field --history https://example.com/
+pagespeed --lcp https://example.com/
 pagespeed --findings https://example.com/
 pagespeed --field --report report.html https://example.com/
 pagespeed --json https://example.com/
