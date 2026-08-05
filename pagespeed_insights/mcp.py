@@ -648,8 +648,60 @@ TOOLS = [
     },
 ]
 
+# ----------------------------------------------------------------------------
+# Tool annotations
+# ----------------------------------------------------------------------------
+# Six of these only ask Google questions. `report` is the exception, because it
+# can save the HTML page to disk, and an annotation describes the tool rather
+# than the call, so the honest reading is the one where the argument that makes
+# it write was supplied.
+_READ_ONLY = {'check_pagespeed', 'diagnose_page', 'field_data', 'explain_lcp',
+              'compare', 'diagnose'}
+
+# Nothing here destroys anything. config.resolve_destination refuses to
+# overwrite and picks a free name instead, so saving twice leaves two files
+# rather than one file and a lost one. That also makes it not idempotent.
+_DESTRUCTIVE = set()
+_IDEMPOTENT = set()
+
+TITLES = {
+    'check_pagespeed': 'Measure page speed',
+    'report': 'Full report',
+    'diagnose_page': 'Diagnose a page',
+    'field_data': 'Real-user field data',
+    'explain_lcp': 'Explain LCP',
+    'compare': 'Compare pages',
+    'diagnose': 'Check configuration',
+}
+
+
+def _annotations(name):
+    """MCP tool annotations. The Connectors Directory rejects a tool with no
+    title or no hint, and destructiveHint and idempotentHint mean nothing when
+    readOnlyHint is true, so they are left off rather than set to a value
+    nothing reads.
+
+    title is repeated inside annotations as well as beside it. The protocol
+    grew a top-level title and older clients still read the one in here."""
+    ann = {'title': TITLES[name],
+           'readOnlyHint': name in _READ_ONLY,
+           'openWorldHint': True}
+    if name not in _READ_ONLY:
+        ann['destructiveHint'] = name in _DESTRUCTIVE
+        ann['idempotentHint'] = name in _IDEMPOTENT
+    return ann
+
+
 HANDLERS = {t['name']: t['handler'] for t in TOOLS}
-TOOL_DEFS = [{k: t[k] for k in ('name', 'description', 'inputSchema')} for t in TOOLS]
+# Named keys, so anything not listed here never reaches the client. That is how
+# a correctly annotated tool arrives bare with nothing failing, which is what
+# happened to title and annotations until 2026-08-05.
+TOOL_DEFS = [{'name': t['name'],
+              'title': TITLES[t['name']],
+              'description': t['description'],
+              'inputSchema': t['inputSchema'],
+              'annotations': _annotations(t['name'])}
+             for t in TOOLS]
 
 
 _WRITE = threading.Lock()
