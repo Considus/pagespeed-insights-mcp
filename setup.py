@@ -207,30 +207,36 @@ def install_blocks():
             + _block(('linux',), 'Linux', 'your terminal (bash)', posix('linux', '~/.bashrc')))
 
 
-def skill_blocks():
-    """Linking the skill into Claude Code, per platform.
+SKILL_DIR = os.path.join(HERE, 'skills', 'pagespeed-insights-read')
 
-    Windows gets a copy rather than a link. mklink needs Developer Mode or an
-    elevated shell, and telling someone to reopen their terminal as
-    administrator to install an optional skill is how an optional thing stops
-    being installed at all. The copy costs them a re-copy after a pull, which
-    is said plainly rather than hidden.
+
+def skill_prompt():
+    """Self-contained, carries no secret, works with any assistant.
+
+    The same shape as install_prompt() and for the same reason. Every client
+    keeps skills somewhere different, some sync them from an account rather
+    than reading the disk at all, and some have no such thing. Printing one
+    platform's path would be right for a fraction of readers and confidently
+    wrong for the rest, so the assistant is asked to work out its own answer,
+    exactly as it already does for the server config.
     """
-    def link(key):
-        return (f'mkdir -p ~/.claude/skills\n'
-                f'ln -s {_folder(key)}/skills/reading-pagespeed '
-                f'~/.claude/skills/reading-pagespeed')
+    return """I have a skill folder on this computer and I would like you to install it \
+into whichever client you are running inside, if that client supports skills.
 
-    windows = (f'mkdir "%USERPROFILE%\\.claude\\skills" 2&gt;nul\n'
-               f'xcopy /E /I "{_folder("nt")}\\skills\\reading-pagespeed" '
-               f'"%USERPROFILE%\\.claude\\skills\\reading-pagespeed"')
+  Skill folder = %s
 
-    return (_block(('darwin',), 'macOS', 'Terminal (zsh)', link('darwin'))
-            + _block(('linux',), 'Linux', 'your terminal (bash)', link('linux'))
-            + _block(('nt',), 'Windows', 'Command Prompt', windows)
-            + '<p class="help">Windows gets a copy rather than a link, because a '
-              'symlink there needs Developer Mode or an elevated shell. Re-copy it '
-              'after a pull to pick up changes.</p>')
+Please:
+1. Work out whether this client supports skills, and where it keeps them on this machine.
+2. Install the folder there, keeping its folder name unchanged. Most clients take the \
+name of the folder as the name of the skill, so renaming it renames the skill.
+3. Prefer linking to the folder above rather than copying it, if this client follows \
+links, so it updates when I next pull. Copy it if not.
+4. If this client syncs skills from an account rather than reading this disk, do not \
+guess at a path. Tell me where to add it instead.
+5. Tell me what you did and whether I need to restart the app.
+
+If this client has no concept of skills, say so plainly and do nothing. Everything \
+works without it.""" % json.dumps(SKILL_DIR)
 
 
 def usage_blocks():
@@ -576,20 +582,14 @@ def done_page(urls, crux_state):
 
 <h2 class="sub">Optional, and worth two minutes</h2>
 <p class="help">The folder you installed into has a <code>skills</code> directory
-   with one skill in it, <b>reading-pagespeed</b>. The server refuses to state a
-   number without saying how much it wanders. It cannot stop an assistant dropping
-   that on the way to an answer, and the usual way that goes wrong is adding four
-   savings estimates together and promising you nine seconds. The skill is what
-   stops it. Everything works without it.</p>
-<p class="help">In Claude Code, link it so it updates when you pull. The folder has
-   to keep its name, because the command comes from the directory rather than from
-   anything inside the file.</p>
-{skill_blocks()}
-<p class="help">Claude Desktop and claude.ai sync skills from your account instead
-   of reading your disk, so the link above will not reach them. Add it under
-   <b>Customize</b> in the Desktop sidebar, or from the skills settings on
-   claude.ai, and it follows you into every session. To check it landed, ask your
-   assistant to list its skills.</p>
+   with one skill in it. The server refuses to state a number without saying how
+   much it wanders. It cannot stop an assistant dropping that on the way to an
+   answer, and the usual way that goes wrong is adding four savings estimates
+   together and promising you nine seconds. The skill is what stops it.</p>
+<p class="help">Not every assistant has skills, and this one works perfectly well
+   without it. Paste this in and yours will tell you either way. It carries no key.</p>
+<div class="blocklabel">Paste into your assistant</div>
+<pre class="paste">{html.escape(skill_prompt())}</pre>
 
 <h2 class="sub">Changing your saved sites</h2>
 <p class="help">The sites above are the default when you do not name one. To add,

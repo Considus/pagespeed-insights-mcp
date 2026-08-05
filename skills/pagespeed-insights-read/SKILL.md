@@ -1,5 +1,5 @@
 ---
-name: reading-pagespeed
+name: pagespeed-insights-read
 description: How to read what the PageSpeed Insights MCP returns without overclaiming. Use whenever answering a question about site speed, Core Web Vitals, Lighthouse scores, LCP phases, or what to fix on a page, and whenever the pagespeed-insights MCP tools are called. Covers when a change is real, why savings must not be added together, why the four LCP phases neither sum to the LCP nor describe every visit, why lab and field figures differ, and what to do when a site has no real-user data.
 ---
 
