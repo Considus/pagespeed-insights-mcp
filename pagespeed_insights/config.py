@@ -122,6 +122,88 @@ def default_urls():
 
 
 # --------------------------------------------------------------------------
+# Where a report may be written
+#
+# The server writes to two places and no others: its own config directory, and
+# a folder the PERSON named. It never picks a folder on someone's behalf and it
+# never creates one they did not ask for.
+#
+# That distinction is the whole guard. An MCP server takes instructions from an
+# assistant, and an assistant reads web pages, so "write the report to
+# ~/.ssh/authorized_keys" is a sentence that can arrive from a page being
+# measured rather than from the user. Confining writes to a folder that already
+# exists and was named in the conversation is what keeps that from mattering.
+# --------------------------------------------------------------------------
+
+class BadDestination(ValueError):
+    """Refusing a place to write, with a reason worth reading."""
+
+
+def reports_dir():
+    """The default, beside the settings. Created on first use, like the rest."""
+    d = config_dir() / 'reports'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def safe_filename(name, fallback):
+    """A file name, never a path.
+
+    Rejects rather than sanitises. Quietly turning ../../x.html into x.html
+    writes a file somewhere the caller did not intend and says nothing, which
+    is the failure this whole package is against.
+    """
+    if not name:
+        return fallback
+    if any(sep in name for sep in ('/', '\\')) or name in ('.', '..') or '..' in name:
+        raise BadDestination(
+            f'{name!r} looks like a path. Pass a file name on its own and use '
+            'directory for where it goes.')
+    if os.path.isabs(name) or (os.name == 'nt' and ':' in name):
+        raise BadDestination(f'{name!r} is an absolute path, not a file name.')
+    return name if name.lower().endswith('.html') else name + '.html'
+
+
+def resolve_destination(directory=None, filename=None, default_name='report.html'):
+    """Where to write, as an absolute path that does not already exist.
+
+    `directory` must ALREADY EXIST. Creating one on request means a typo makes
+    a stray folder in someone's home directory and the report goes somewhere
+    they will not think to look.
+    """
+    name = safe_filename(filename, default_name)
+
+    if directory:
+        target = pathlib.Path(directory).expanduser()
+        try:
+            target = target.resolve(strict=True)
+        except (OSError, FileNotFoundError):
+            raise BadDestination(
+                f'{directory} does not exist. Give a folder that is already '
+                'there, or leave it out and the report goes to '
+                f'{reports_dir()}.')
+        if not target.is_dir():
+            raise BadDestination(f'{target} is a file, not a folder.')
+        if not os.access(target, os.W_OK):
+            raise BadDestination(f'{target} is not writable.')
+    else:
+        target = reports_dir()
+
+    path = target / name
+    # Never overwrite. Someone comparing a before against an after has two
+    # reports they both want, and silently replacing the first is losing the
+    # thing they were about to compare against.
+    if path.exists():
+        stem, suffix = path.stem, path.suffix
+        for n in range(2, 1000):
+            candidate = target / f'{stem}-{n}{suffix}'
+            if not candidate.exists():
+                return candidate
+        raise BadDestination(f'Too many files named like {name} in {target}.')
+    return path
+
+
+# --------------------------------------------------------------------------
 # Baselines
 #
 # A comparison needs a "before", and the before happened days ago in another
