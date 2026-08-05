@@ -3,6 +3,7 @@
     python3 -m pagespeed_insights https://example.com
     python3 -m pagespeed_insights --runs 3 --strategy both https://example.com
     python3 -m pagespeed_insights --field --history https://example.com
+    python3 -m pagespeed_insights --lcp https://example.com
     python3 -m pagespeed_insights --json https://example.com
 
 EXIT CODES, and why they are not all 1. Something running this in CI needs to
@@ -23,7 +24,7 @@ import pathlib
 import sys
 import time
 
-from . import __version__, config, crux, psi, render, report
+from . import __version__, config, crux, lcp, psi, render, report
 from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
                      PageUnreachable, QuotaExhausted, Unavailable)
 
@@ -65,6 +66,22 @@ def _field(url, key, want_history, quiet):
     return out
 
 
+def _lcp(url, key, quiet):
+    """The LCP breakdown, from the same record --field would have fetched."""
+    try:
+        record = crux.record(url, key)
+    except CruxUnavailable as e:
+        if not quiet:
+            print(f'\n{url}  [where the LCP time goes]\n  {e.message}\n  {e.hint}')
+        return {'unavailable': {'reason': e.reason, 'message': e.message}}
+    analysis = lcp.explain(record)
+    if not quiet:
+        print('\n' + render.lcp(analysis, url))
+        if analysis['available']:
+            print('\n  ' + render.LCP_NOTE)
+    return analysis
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog='pagespeed_insights',
@@ -90,6 +107,9 @@ def main(argv=None):
                              'fixing it is worth. Costs no extra API calls')
     parser.add_argument('--field', action='store_true',
                         help='also fetch real-user data from the Chrome UX Report')
+    parser.add_argument('--lcp', action='store_true',
+                        help='also break the LCP into its four phases, from '
+                             'real-user data. One extra call, answers at once')
     parser.add_argument('--history', action='store_true',
                         help='with --field, also fetch the p75 time series')
     parser.add_argument('--json', action='store_true', help='machine-readable output')
@@ -121,7 +141,7 @@ def main(argv=None):
                          '     exhausted. A 429 from here is Google, not your site.'),
               file=sys.stderr)
 
-    payload = {'version': __version__, 'results': [], 'field': {}}
+    payload = {'version': __version__, 'results': [], 'field': {}, 'lcp': {}}
     try:
         for url in urls:
             for strategy in strategies:
@@ -139,6 +159,8 @@ def main(argv=None):
                         print(f'\n  Google warns: {w}')
             if args.field:
                 payload['field'][url] = _field(url, key, args.history, args.json)
+            if args.lcp:
+                payload['lcp'][url] = _lcp(url, key, args.json)
     except PageSpeedError as e:
         if args.json:
             json.dump({'error': e.message, 'hint': e.hint}, sys.stdout, indent=2)
