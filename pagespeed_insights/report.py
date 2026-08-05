@@ -89,8 +89,21 @@ def _esc(s):
     return html.escape(str(s), quote=False)
 
 
-def build(results, field=None, findings_by_url=None, generated=''):
-    """One page for one check. `results` is what measure() returned per URL."""
+def build(results, field=None, findings_by_url=None, generated='',
+          inline_fonts=True):
+    """One page for one check. `results` is what measure() returned per URL.
+
+    `inline_fonts` is the difference between a file and a message. The four
+    brand faces are 145KB, which is 90% of the page and about 37,000 tokens.
+    On disk that is free and the page keeps its typography anywhere it is
+    opened. Passed back through an assistant it is most of a context window
+    spent on base64, so the MCP asks for them off and the page falls back to
+    the system stack. Same renderer either way: a second one would be how the
+    two versions start disagreeing about a number.
+
+    The mark stays in both. It is 1.2KB, and a page with no logo does not look
+    like it came from anywhere.
+    """
     from . import render
     field = field or {}
     findings_by_url = findings_by_url or {}
@@ -145,7 +158,8 @@ def build(results, field=None, findings_by_url=None, generated=''):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Page speed report</title>'
-            f'<style>{brand.font_css()}{brand.PALETTE}{brand.CHROME}{CSS}</style>'
+            f'<style>{brand.font_css() if inline_fonts else ""}'
+            f'{brand.PALETTE}{brand.CHROME}{CSS}</style>'
             f'</head><body><div class="wrap">{brand.header()}{"".join(out)}'
             f'{brand.footer()}</div></body></html>')
 
