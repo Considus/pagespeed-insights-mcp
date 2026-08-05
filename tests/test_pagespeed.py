@@ -273,11 +273,8 @@ class CollectUntilDistinct(unittest.TestCase):
         self.assertFalse(result['short'])
         self.assertIn('anecdote', render.result(result))
 
-    def test_progress_reports_distinct_collected_not_calls_made(self):
-        seen = []
-        state = {'i': 0}
-        script = [self._payload(1000, 't1'), self._payload(1000, 't1'),
-                  self._payload(1100, 't2')]
+    def _run_with_progress(self, script, runs=2):
+        seen, state = [], {'i': 0}
 
         def fake_fetch(url, strategy, key, **_):
             p = script[min(state['i'], len(script) - 1)]
@@ -286,11 +283,35 @@ class CollectUntilDistinct(unittest.TestCase):
 
         real, psi.fetch = psi.fetch, fake_fetch
         try:
-            psi.measure('https://x.test/', runs=2, key='k', sleep=lambda s: None,
-                        progress=lambda d, t, u, s: seen.append(d))
+            psi.measure('https://x.test/', runs=runs, key='k', sleep=lambda s: None,
+                        progress=lambda d, t, u, s, fresh: seen.append((d, fresh)))
         finally:
             psi.fetch = real
-        self.assertEqual(seen, [1, 2])            # not [1, 2, 3]
+        return seen
+
+    def test_progress_counts_distinct_collected_not_calls_made(self):
+        """The count is measurements, so a replay must not advance it."""
+        seen = self._run_with_progress(
+            [self._payload(1000, 't1'), self._payload(1000, 't1'),
+             self._payload(1100, 't2')])
+        self.assertEqual([d for d, _ in seen], [1, 1, 2])   # middle one is a replay
+
+    def test_progress_fires_on_every_call_including_the_replays(self):
+        """A timeout fix, not cosmetics.
+
+        MCP clients reset their request timeout when a progress notification
+        arrives. Google produces a genuinely new analysis about once a minute,
+        so a callback firing only on new analyses beats at ~60s intervals,
+        which is at or past most clients' default timeout. Measured live on
+        2026-08-05: a 2-run report emitted its two notifications 58 seconds
+        apart, and every run through a client reported a timeout. Polling is
+        every 15s, so firing per call gives four beats inside that window.
+        """
+        seen = self._run_with_progress(
+            [self._payload(1000, 't1'), self._payload(1000, 't1'),
+             self._payload(1100, 't2')])
+        self.assertEqual(len(seen), 3, 'a replay produced no heartbeat')
+        self.assertEqual([fresh for _, fresh in seen], [True, False, True])
 
 
 class MedianAndSpread(unittest.TestCase):
@@ -1314,6 +1335,65 @@ class McpProtocol(unittest.TestCase):
                                          'arguments': {'urls': ['https://a.example/'],
                                                        'runs': bad}}})
             self.assertTrue(out[0]['result'].get('isError'), f'runs={bad!r} was allowed')
+
+    def test_a_slow_tool_still_beats_while_it_is_blocked(self):
+        """The reason every client run timed out.
+
+        The per-poll callback fires BETWEEN PageSpeed calls. It cannot fire
+        during one, and a single call blocks while Lighthouse runs, which on a
+        slow page is exactly the site being measured. Without a keepalive there
+        was 58 seconds of silence on a real 2-run report and the client gave up.
+        """
+        import time as _t
+        beats = []
+        real_send, self.mcp._send = self.mcp._send, beats.append
+        real_ka = self.mcp.KEEPALIVE_SECONDS
+        self.mcp.KEEPALIVE_SECONDS = 0.05
+        try:
+            with self.mcp._Keepalive('tok', 3) as alive:
+                alive.note(1, 3, 'measuring')
+                _t.sleep(0.35)
+        finally:
+            self.mcp.KEEPALIVE_SECONDS = real_ka
+            self.mcp._send = real_send
+        self.assertGreaterEqual(len(beats), 2, 'no keepalive while blocked')
+        self.assertTrue(all(b['method'] == 'notifications/progress' for b in beats))
+        self.assertEqual(beats[-1]['params']['message'], 'measuring',
+                         'the beat should carry the last real message, not an '
+                         'invented one')
+
+    def test_no_progress_token_means_no_keepalive(self):
+        """Beating at a client that never asked for progress is noise on a
+        stream where noise is fatal."""
+        import time as _t
+        beats = []
+        real_send, self.mcp._send = self.mcp._send, beats.append
+        real_ka = self.mcp.KEEPALIVE_SECONDS
+        self.mcp.KEEPALIVE_SECONDS = 0.05
+        try:
+            with self.mcp._Keepalive(None, 3):
+                _t.sleep(0.2)
+        finally:
+            self.mcp.KEEPALIVE_SECONDS = real_ka
+            self.mcp._send = real_send
+        self.assertEqual(beats, [])
+
+    def test_the_keepalive_stops_before_the_result_is_sent(self):
+        """A beat arriving after its own response is a stray message about a
+        request the client has already closed."""
+        import time as _t
+        alive = self.mcp._Keepalive('tok', 1)
+        with alive:
+            pass
+        self.assertFalse(alive._thread.is_alive())
+
+    def test_every_writer_shares_one_lock(self):
+        """Two threads writing to stdout interleave into one corrupt line, and
+        the client reports the server dying for no visible reason."""
+        # setUp replaces mcp._send, so inspect the real one this class saved
+        # rather than the stand-in.
+        import inspect
+        self.assertIn('_WRITE', inspect.getsource(self._real_send))
 
     def test_notifications_get_no_reply(self):
         self.assertEqual(self._call({'jsonrpc': '2.0',
