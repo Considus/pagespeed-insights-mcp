@@ -176,7 +176,7 @@ path.
 
 Two things about `explain_lcp` are worth knowing before you read one, and both
 are printed in every answer. The four phases do **not** add up to the LCP, and
-the gap is not rounding: across twelve real origins the sum missed by anything
+the gap is not rounding. Across twelve real origins the sum missed by anything
 from 40ms under to 2.6 seconds over. Each phase is its own 75th percentile, and
 percentiles do not add. And the phases are measured only over visits where the
 largest element was an image, which on some sites is a small minority, so the
@@ -194,7 +194,7 @@ change, call it again, and it measures afresh and reports what moved.
 
 It gives a verdict only where the two min-max ranges do not overlap at all.
 That is deliberately conservative and it will miss small real improvements. The
-reason is that the two possible mistakes are not equally bad: telling you
+reason is that the two possible mistakes are not equally bad. Telling you
 nothing moved when something did costs you a little confidence, while telling
 you something improved when it was noise is a claim you might repeat to a
 client. Where a change is real it reports both the difference in medians and
@@ -208,7 +208,7 @@ compared, because a 28-day rolling window cannot show a change made this week.
 ### The skill
 
 `skill/SKILL.md` teaches an assistant how to read the results. The server
-refuses to state a number without its uncertainty; it cannot stop an assistant
+refuses to state a number without its uncertainty. It cannot stop an assistant
 dropping that uncertainty on the way to an answer, and the most common way that
 goes wrong is adding four savings estimates together and promising nine seconds.
 Install it alongside the server if your assistant supports skills.
@@ -255,8 +255,8 @@ pagespeed --field --report report.html https://example.com/
 pagespeed --json https://example.com/
 ```
 
-`--report` writes one self-contained HTML page: no scripts, no network, nothing
-external. It opens from a file and survives being emailed, which matters because
+`--report` writes one self-contained HTML page with no scripts, no network and
+nothing external. It opens from a file and survives being emailed, which matters because
 the largest finding is often a hosting or third-party decision belonging to
 somebody other than whoever ran the check.
 
