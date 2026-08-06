@@ -444,6 +444,44 @@ metric is a number, so the obvious comparison raises a TypeError. Neither
 announces itself. In a measurement tool, a wrong number that looks right is the
 only kind of bug that matters.
 
+## Privacy Policy
+
+This one is not local-only, and pretending otherwise would be the wrong thing to write. Measuring a page means asking Google to measure it, so the address you check goes to Google. That is the tool working rather than a leak, but it is worth stating first rather than buried.
+
+### What leaves this machine, and where it goes
+
+The URL you are measuring, sent to the PageSpeed Insights API, and to the Chrome UX Report API when you ask for field data. Your API key travels with those requests if you have one. Nothing else. Google then loads that page from their own infrastructure and measures it, so the page owner sees a visit from Google rather than from you.
+
+Google's handling of those requests is Google's, governed by their privacy policy and their API terms, and it is outside anything Considus can promise for them.
+
+### What does not leave
+
+There is no Considus server in this. No account, no telemetry, no crash reporting, no usage counting, and no licence check. We never see what you measured, when, or that you ran it at all. There is nothing on our side to see it from.
+
+### What it writes, and where
+
+`settings.json` holds your API key and any URLs you saved, in your platform's config directory, and `PAGESPEED_CONFIG_DIR` moves it wherever you like.
+
+Baselines, so a later run can tell you whether a change is real or noise, sit beside it.
+
+HTML reports go to the reports folder next to those settings, or to a folder you named in the conversation. Nothing writes to a folder that does not already exist, and nothing is ever overwritten.
+
+All of it is on your own disk and all of it is yours to delete. Deleting `settings.json` removes the key from the machine.
+
+### About the key being in a file
+
+On macOS and Linux it is written owner-readable only. On Windows that request is ignored, because Windows has no POSIX file modes, and the protection there comes from `%APPDATA%` sitting inside your user profile instead. That is real, and it is inherited rather than set by this tool, which is a weaker promise and worth knowing.
+
+It is a file rather than a keychain entry because reaching the keychain portably needs an installed package, which needs a virtual environment and a `pip` step, which is the whole "clone it and run it" advantage gone. Weigh that against what the credential is. A PageSpeed key restricted as the setup instructs is read-only access to public measurements of public pages. It holds no personal data, unlocks no account, and cannot be billed against, because the API is free. The worst a stolen one does is spend a quota you can reset by deleting the key. Anyone who disagrees with that trade sets `PAGESPEED_API_KEY` from their own secret manager and no key is stored at all.
+
+### Retention, and who else gets it
+
+We hold nothing, so there is nothing for us to keep, and nothing for us to delete on your behalf. Nothing is shared with anyone, because nothing reaches us to share. Google is the only third party involved, and only for the measurement requests above.
+
+### If you want to ask about any of this
+
+Write to privacy@considus.com, or open an issue at [github.com/Considus/pagespeed-insights-mcp/issues](https://github.com/Considus/pagespeed-insights-mcp/issues). The policy covering considus.com itself is at [considus.com/privacy](https://considus.com/privacy/), and it is a separate document because it covers a separate thing.
+
 ## Support
 
 This is free and stays that way. Apache 2.0 means you can take it, build on it,
