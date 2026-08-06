@@ -1353,7 +1353,15 @@ class McpProtocol(unittest.TestCase):
         try:
             with self.mcp._Keepalive('tok', 3) as alive:
                 alive.note(1, 3, 'measuring')
-                _t.sleep(0.35)
+                # Wait for the beats, not for the clock. The thread beats every
+                # KEEPALIVE_SECONDS, but how many times it is scheduled inside a
+                # fixed sleep is a fact about the machine rather than about the
+                # keepalive, and a loaded CI runner managed one. The deadline is
+                # long enough that reaching it means the beats never came at
+                # all, which is the thing worth failing on.
+                deadline = _t.monotonic() + 5
+                while len(beats) < 2 and _t.monotonic() < deadline:
+                    _t.sleep(0.01)
         finally:
             self.mcp.KEEPALIVE_SECONDS = real_ka
             self.mcp._send = real_send
