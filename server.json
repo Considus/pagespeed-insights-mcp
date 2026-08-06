@@ -13,7 +13,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/Considus/pagespeed-insights-mcp/releases/download/v1.4.0/pagespeed-insights-mcp-1.4.0.mcpb",
-      "fileSha256": "c0c02afc3a27a0a5f1b335e0cfd3d267f27745d15407ba0e422b1fe934383ddc",
+      "fileSha256": "bdc071f292053f72ba97dc090046bf0982dcdd3fad3f94e14b707e8791bea7f1",
       "transport": {
         "type": "stdio"
       }
