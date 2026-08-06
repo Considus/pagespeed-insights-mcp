@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1605,6 +1606,85 @@ class SetupPageRenders(unittest.TestCase):
         config.save({'api_key': 'AIzaSECRET', 'urls': []})
         self.assertNotIn('AIzaSECRET', setup.install_prompt())
         self.assertNotIn('AIzaSECRET', setup.done_page([], {'available': True}))
+
+
+class Annotations(unittest.TestCase):
+    """A directory submission is rejected without a title and the applicable
+    hint, and a wrong hint is worse than a missing one, because a client uses
+    readOnlyHint to decide what it may run without asking."""
+
+    def setUp(self):
+        from pagespeed_insights import mcp
+        self.mcp = mcp
+
+    def test_titles_match_the_tool_list_exactly(self):
+        self.assertEqual(set(self.mcp.TITLES),
+                         {t['name'] for t in self.mcp.TOOLS})
+
+    def test_read_only_set_names_real_tools(self):
+        names = {t['name'] for t in self.mcp.TOOLS}
+        self.assertEqual(self.mcp._READ_ONLY - names, set())
+
+    def test_read_only_tools_omit_the_hints_that_mean_nothing(self):
+        for name in self.mcp._READ_ONLY:
+            ann = self.mcp._annotations(name)
+            self.assertTrue(ann['readOnlyHint'])
+            self.assertNotIn('destructiveHint', ann)
+            self.assertNotIn('idempotentHint', ann)
+
+    def test_report_is_not_read_only_because_it_can_write_a_file(self):
+        # The only tool here that touches the disk. An annotation describes the
+        # tool and not the call, so passing directory or filename is the case
+        # that decides it.
+        ann = self.mcp._annotations('report')
+        self.assertFalse(ann['readOnlyHint'])
+        self.assertIn('destructiveHint', ann)
+
+    def test_saving_a_report_destroys_nothing(self):
+        # config.resolve_destination picks a free name rather than overwriting,
+        # which is what makes this additive and also what makes it non-idempotent.
+        ann = self.mcp._annotations('report')
+        self.assertFalse(ann['destructiveHint'])
+        self.assertFalse(ann['idempotentHint'])
+
+
+class AnnotationsOverStdio(unittest.TestCase):
+    """The real thing, in a subprocess, over the wire.
+
+    TOOL_DEFS copies a named list of keys, so a tool can carry a title and
+    annotations in TOOLS and still arrive at the client without them, and
+    nothing fails when it does. Asserting on the module cannot see that. This
+    launches the server the way a client does and reads what comes back."""
+
+    def _tools_list(self):
+        server = pathlib.Path(__file__).resolve().parent.parent / 'mcp_server.py'
+        payload = '\n'.join(json.dumps(r) for r in [
+            {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+             'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+                        'clientInfo': {'name': 'test', 'version': '0'}}},
+            {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
+        ]) + '\n'
+        out = subprocess.run([sys.executable, str(server)], input=payload,
+                             capture_output=True, text=True, timeout=60).stdout
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            if msg.get('id') == 2:
+                return msg['result']['tools']
+        self.fail('no tools/list reply came back')
+
+    def test_every_tool_arrives_with_a_title_and_annotations(self):
+        for tool in self._tools_list():
+            self.assertTrue(tool.get('title'), tool['name'])
+            self.assertIn('annotations', tool)
+            self.assertIn('readOnlyHint', tool['annotations'])
+
+    def test_the_hints_that_arrive_are_the_ones_declared(self):
+        by_name = {t['name']: t for t in self._tools_list()}
+        self.assertTrue(by_name['check_pagespeed']['annotations']['readOnlyHint'])
+        self.assertFalse(by_name['report']['annotations']['readOnlyHint'])
+        self.assertFalse(by_name['report']['annotations']['destructiveHint'])
 
 
 if __name__ == '__main__':
