@@ -1687,5 +1687,73 @@ class AnnotationsOverStdio(unittest.TestCase):
         self.assertFalse(by_name['report']['annotations']['destructiveHint'])
 
 
+class Manifest(unittest.TestCase):
+    """manifest.json is what a directory reviewer reads. If it stops describing
+    the server, the listing is wrong and nothing else notices."""
+
+    def setUp(self):
+        self.root = pathlib.Path(__file__).resolve().parent.parent
+        with open(self.root / 'manifest.json', encoding='utf-8') as f:
+            self.man = json.load(f)
+
+    def test_version_matches_the_package(self):
+        from pagespeed_insights import __version__
+        self.assertEqual(self.man['version'], __version__)
+
+    def test_tool_list_matches_the_server(self):
+        from pagespeed_insights import mcp
+        expected = [{'name': d['name'], 'description': d['description']}
+                    for d in mcp.TOOL_DEFS]
+        self.assertEqual(self.man['tools'], expected)
+
+    def test_privacy_policy_is_declared_over_https(self):
+        # A missing or incomplete privacy policy is an immediate rejection.
+        policies = self.man.get('privacy_policies') or []
+        self.assertTrue(policies)
+        for url in policies:
+            self.assertTrue(url.startswith('https://'), url)
+
+    def test_the_key_field_is_marked_sensitive_and_optional(self):
+        # Optional because the server works without a key, on the shared quota.
+        key = self.man['user_config']['api_key']
+        self.assertTrue(key['sensitive'])
+        self.assertFalse(key['required'])
+
+    def test_readme_has_a_privacy_policy_section(self):
+        with open(self.root / 'README.md', encoding='utf-8') as f:
+            self.assertIn('## Privacy Policy', f.read())
+
+    def test_the_entry_point_is_in_the_bundle(self):
+        # The manifest names it; build-mcpb.py has to be carrying it.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_build_mcpb', self.root / 'build-mcpb.py')
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        self.assertIn(self.man['server']['entry_point'], build.INCLUDE)
+        # brand.py reads these at run time to inline them into the report.
+        self.assertIn('assets', build.INCLUDE_TREES)
+        self.assertIn('pagespeed_insights', build.INCLUDE_TREES)
+
+
+class BlankConfigCountsAsUnset(unittest.TestCase):
+    """A bundle install declares the optional fields up front, so a field the
+    user left alone can still arrive as an empty string. Blank has to mean
+    'not answered' rather than a value that overrides what was saved."""
+
+    def test_a_blank_key_falls_through_to_the_settings_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ['PAGESPEED_CONFIG_DIR'] = tmp
+            try:
+                config.save({'api_key': 'from-the-file'})
+                os.environ['PAGESPEED_API_KEY'] = ''
+                self.assertEqual(config.api_key(), 'from-the-file')
+                os.environ['PAGESPEED_API_KEY'] = 'from-the-env'
+                self.assertEqual(config.api_key(), 'from-the-env')
+            finally:
+                os.environ.pop('PAGESPEED_API_KEY', None)
+                os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+
+
 if __name__ == '__main__':
     unittest.main()
