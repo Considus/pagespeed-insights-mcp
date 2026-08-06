@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.considus/pagespeed-insights-mcp",
+  "title": "PageSpeed Insights MCP",
+  "description": "Measure a page with Google PageSpeed Insights honestly, reporting the median of several distinct analyses with its spread rather than one noisy run.",
+  "version": "1.4.0",
+  "websiteUrl": "https://considus.com/pagespeed-insights-mcp/",
+  "repository": {
+    "url": "https://github.com/Considus/pagespeed-insights-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/Considus/pagespeed-insights-mcp/releases/download/v1.4.0/pagespeed-insights-mcp-1.4.0.mcpb",
+      "fileSha256": "c0c02afc3a27a0a5f1b335e0cfd3d267f27745d15407ba0e422b1fe934383ddc",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

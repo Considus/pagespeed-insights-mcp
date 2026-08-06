@@ -15,3 +15,4 @@ settings.json
 # because that is where it is useful, and it must never ship — a public repo
 # publishes every file in it.
 SCOPE.md
+dist/

@@ -51,6 +51,24 @@ PAGESPEED_CONFIG_DIR=/tmp/psi-test PAGESPEED_API_KEY=... python3 -m pagespeed_in
 
 Never commit a key, and never paste one into an issue or a pull request.
 
+## Building the bundle
+
+`manifest.json` is what the MCP Registry and the Connectors Directory list, and it has to keep describing the server. The tool list and the version live in the package, so the build copies them across and refuses to run if the two have drifted.
+
+```bash
+./build-mcpb.py --check
+```
+
+`--sync` writes the tool list and version into `manifest.json` from the package, which is what you want after adding or renaming a tool. With no argument it checks, packs `dist/pagespeed-insights-mcp-<version>.mcpb`, and stamps the artifact's SHA-256 into `server.json`.
+
+The bundle carries `assets/` as well as the package. `brand.py` resolves that folder as a sibling of `pagespeed_insights` and reads the icon and the four woff2 faces at run time to inline them into the HTML report. A missing face falls back to the system stack rather than failing, so leaving them out would not break anything loudly, it would just quietly produce reports that stopped looking like the product. `OFL.txt` travels because the font licence requires it to.
+
+`setup.py` is not in the bundle, because a bundle is configured through the manifest's `user_config`. Unlike the Proton server, setup here writes to the platform config directory rather than beside the server, so a key saved by a cloned copy is picked up by a bundle install too. They share one settings file.
+
+Every tool needs a title and the right `readOnlyHint` or `destructiveHint`, and a directory submission is rejected without them. `report` is the one that is not read-only, because it writes a file when given a directory or a filename. Tests cover this.
+
+Releasing, and the order matters. Build once, upload the artifact that build produced, then publish `server.json` from the same run. The archive carries timestamps, so the build is not reproducible and a second build of identical sources hashes differently. Rebuild after stamping and `server.json` points at a hash no published file has, which a client reads as a corrupted download rather than a mistake in the listing.
+
 ## Proposing a change
 
 Open a pull request against `main`. Say what it changes and why. If it touches
