@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.considus/pagespeed-insights-mcp",
+  "name": "com.considus/pagespeed-insights-mcp",
   "title": "PageSpeed Insights MCP",
   "description": "Measure a page with Google PageSpeed Insights honestly, reporting the median of several distinct analyses with its spread rather than one noisy run.",
   "version": "1.4.0",
