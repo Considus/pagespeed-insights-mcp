@@ -4,7 +4,7 @@
   "name": "pagespeed-insights-mcp",
   "display_name": "PageSpeed Insights MCP",
   "version": "1.4.0",
-  "description": "Measure a page with Google PageSpeed Insights honestly, reporting the median of several distinct analyses with its spread rather than one noisy run.",
+  "description": "One run is noise, so this reports the median of several distinct PageSpeed analyses and the spread.",
   "long_description": "A single Lighthouse run is noise. Total Blocking Time swings threefold between runs on an unchanged page, and Google re-analyses a URL only about once a minute, replaying the cached result in between, so asking three times usually returns the same analysis three times. This collects genuinely distinct analyses, reports the median with the min-max spread, and says how many it actually got.\n\nIt also reads Chrome UX Report field data where Google has it, ranks what is failing by what fixing it is worth, and builds a self-contained HTML report you can send to whoever owns the hosting.\n\nWorks without an API key on Google's shared anonymous quota, which is fine for trying it and unreliable for depending on it. A free key of your own fixes that.\n\nUnofficial, and not affiliated with, endorsed by or sponsored by Google LLC. It calls two public Google APIs and bundles no Google code.",
   "author": {
     "name": "Considus",
