@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.considus/pagespeed-insights-mcp",
   "title": "PageSpeed Insights MCP",
-  "description": "Measure a page with Google PageSpeed Insights honestly, reporting the median of several distinct analyses with its spread rather than one noisy run.",
+  "description": "One run is noise, so this reports the median of several distinct PageSpeed analyses and the spread.",
   "version": "1.4.0",
   "websiteUrl": "https://considus.com/pagespeed-insights-mcp/",
   "repository": {
