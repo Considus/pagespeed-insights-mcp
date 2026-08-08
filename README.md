@@ -70,6 +70,28 @@ So this reports both, separately, and never merges them into a single figure.
 - Tells an exhausted quota apart from a broken page, and a misconfigured key
   apart from both.
 
+## Things to actually ask it
+
+Four that exercise different parts of it, and none need you to know a tool name.
+
+**"How fast is considus.com on mobile, and how confident are you in that
+number?"** The whole reason this exists. You get the median of several genuinely
+distinct analyses and the spread around it, not one run quoted as fact.
+
+**"Is there real user data for this site, or only lab numbers?"** Reads the
+Chrome UX Report, which is the only evidence here about actual visitors and the
+only thing Google ranks on. Plenty of small sites have none, and it says so
+rather than letting a lab score stand in.
+
+**"What's actually holding up the LCP on that page?"** Splits one number into
+the four phases it is made of, so you find out whether it is the server, the
+discovery, the download or the paint. Fast, one call, no averaging needed.
+
+**"Did that change help?"** Records a baseline on the first call, then compares
+after you have made the change. It only calls a difference real when the two
+ranges do not overlap, which is what stops you celebrating the instrument
+moving.
+
 ## Before you start
 
 You need an API key from Google Cloud. It is free, it takes about a minute, and
@@ -486,6 +508,14 @@ Write to privacy@considus.com, or open an issue at [github.com/Considus/pagespee
 
 This is free and stays that way. Apache 2.0 means you can take it, build on it,
 and ship it commercially without owing anything back, which is deliberate.
+
+Something broken or a number you don't believe,
+[open an issue](https://github.com/Considus/pagespeed-insights-mcp/issues).
+Anything exploitable goes through GitHub's private reporting instead, described
+in [SECURITY.md](SECURITY.md), rather than a public issue. For anything that
+fits neither, including press and licensing, it's <support@considus.com>, and
+the other ways to reach us are at
+[considus.com/support](https://considus.com/support/).
 
 If it stopped you chasing a regression that was never there, then consider
 [buying me a coffee](https://buymeacoffee.com/considus). If it didn't, telling
