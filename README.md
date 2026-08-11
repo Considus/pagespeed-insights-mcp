@@ -344,6 +344,53 @@ tell a broken site apart from a bad afternoon at Google.
 Only 5 means the page is at fault. Failing a build on 3 or 6 is failing it
 because Google was busy.
 
+## When something goes wrong
+
+Every failure carries the sentence that fixes it rather than a stack trace, and
+most of them are not about your site at all. Knowing which is which saves you
+changing something that was never broken.
+
+**A 429 and no key.** You are on the shared anonymous pool, which everyone else
+is also using and which is routinely spent by the middle of the day. It says
+nothing whatsoever about the page you were measuring. Run setup and add a key.
+
+**A 429 with a key.** Your own project quota is spent for the day. It resets at
+midnight Pacific time.
+
+**A 400 or 403 from PageSpeed Insights.** The key is missing, wrong, or carrying
+an HTTP-referrer restriction. That last one is the usual answer, and it is step
+9 of [Before you start](#before-you-start) coming back to bite, because a
+program has no referring web page, so a key restricted that way is refused every
+single time. Use API restrictions instead, or none. While you are on that
+screen, check the PageSpeed Insights API is enabled on the project at all.
+
+**No field data for the origin.** This is not a failure and the tool won't
+report it as one. Google publishes real-user data only for origins with enough
+traffic to stay anonymous, so a small, new or pre-launch site has none, and
+won't until it has visitors. What's left is the lab, which is a simulation and
+not evidence about anybody's real experience.
+
+**The Chrome UX Report says it has not been used in this project.** Either the
+API isn't enabled, or you enabled it a minute ago and it hasn't finished
+propagating. Those two are indistinguishable from out here, and this one has
+already been retried before you see it, so wait a couple of minutes and run it
+again before changing anything.
+
+**The Chrome UX Report refuses the key.** The key itself is fine, its API
+restrictions just don't include Chrome UX Report API. Add it in the Google Cloud
+console, under Credentials, editing the key's API restrictions.
+
+**Lighthouse could not load the page.** Unlike everything above it, this one
+really is about your site. Check the URL serves a 200 to an anonymous visitor,
+with no login in the way and no geographic block.
+
+**It could not reach Google at all.** Network, DNS or a timeout, already retried
+with backoff by the time it says so.
+
+When you can't tell which of these you have, `diagnose` answers it. Whether the
+key works, whether the Chrome UX Report is reachable, and which baselines are
+held, none of it disclosing the key.
+
 ## Updating
 
 There's no package and no installer, so there's nothing to download. The server
