@@ -6,7 +6,7 @@ Standard library only. No pip, no virtual environment, no compiled dependency â€
 from .errors import (CredentialRejected, CruxUnavailable, PageSpeedError,
                      PageUnreachable, QuotaExhausted, Unavailable)
 
-__version__ = '1.4.1'
+__version__ = '1.4.2'
 
 __all__ = ['PageSpeedError', 'QuotaExhausted', 'CredentialRejected',
            'PageUnreachable', 'Unavailable', 'CruxUnavailable', '__version__']
