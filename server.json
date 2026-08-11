@@ -3,7 +3,7 @@
   "name": "com.considus/pagespeed-insights-mcp",
   "title": "PageSpeed Insights MCP",
   "description": "One run is noise, so this reports the median of several distinct PageSpeed analyses and the spread.",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "websiteUrl": "https://considus.com/pagespeed-insights-mcp/",
   "repository": {
     "url": "https://github.com/Considus/pagespeed-insights-mcp",
@@ -12,8 +12,8 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Considus/pagespeed-insights-mcp/releases/download/v1.4.1/pagespeed-insights-mcp-1.4.1.mcpb",
-      "fileSha256": "f70bd9b25e143d870b248b5800b6ca42408a3d7e4b5800b833e1c306506857e7",
+      "identifier": "https://github.com/Considus/pagespeed-insights-mcp/releases/download/v1.4.2/pagespeed-insights-mcp-1.4.2.mcpb",
+      "fileSha256": "fba70505bae6a7b04e8d77681ef59001aa67709dc30302e0b3ffc4d20e3b7fbf",
       "transport": {
         "type": "stdio"
       }
