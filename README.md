@@ -7,6 +7,8 @@ uncertainty. Works from an assistant that speaks MCP, or from a terminal.
 Standard library only. No virtual environment, no `pip`, no compiled
 dependency. Clone it and run it.
 
+[Docs](https://considus.com/pagespeed-insights-mcp/) · [Install](https://considus.com/pagespeed-insights-mcp/install/) · [FAQ](https://considus.com/pagespeed-insights-mcp/faq/)
+
 ## Why another one
 
 There are already several PageSpeed MCP servers. As far as we can tell, every
