@@ -85,13 +85,17 @@ on describing the previous bundle, silently and for as long as you leave it.
    `description` over 100 characters, and it does so at publish time, long after
    a release has been cut. `mcp-publisher validate` catches it and publishes
    nothing.
-3. **Open a PR and merge it.** Everything below assumes `main` is final.
-4. **Tag `main` once the listing is settled, not before.** A tag cut earlier
-   points at a commit whose `manifest.json` disagrees with the copy inside the
-   bundle you are about to ship.
-5. **Build once.** `./build-mcpb.py` packs
-   `dist/pagespeed-insights-mcp-<version>.mcpb` and stamps its SHA-256 into
-   `server.json`. Do not build again after this.
+3. **Build once.** `./build-mcpb.py` packs
+   `dist/pagespeed-insights-mcp-<version>.mcpb` and stamps its SHA-256 and its
+   download URL into `server.json`. That write has to be committed, which is why
+   the build sits here rather than after the tag. Do not build again after this.
+4. **Open a PR carrying the bump, the synced `manifest.json` and the stamped
+   `server.json`, and merge it.** Everything below assumes `main` is final.
+5. **Tag the merge commit.** The tag has to contain the stamp, so that the
+   source it points at agrees with the listing and with the copy of
+   `manifest.json` inside the bundle you are about to ship. Until 2026-08-11
+   this said to tag before building, which cannot do that, because at that point
+   the stamp does not exist yet and lands on `main` untagged after the release.
 6. **Cut the release with that exact file.**
 
    ```bash
