@@ -651,17 +651,22 @@ TOOLS = [
 # ----------------------------------------------------------------------------
 # Tool annotations
 # ----------------------------------------------------------------------------
-# Six of these only ask Google questions. `report` is the exception, because it
-# can save the HTML page to disk, and an annotation describes the tool rather
-# than the call, so the honest reading is the one where the argument that makes
-# it write was supplied.
+# Five of these only ask Google questions. `report` can save the HTML page to
+# disk, and `compare` records a baseline on the first call for a URL — an
+# annotation describes the tool rather than the call, so the honest reading is
+# the one where the argument that makes it write was supplied. `compare` sat in
+# this set until 1.4.3, which contradicted its own description and told a
+# client it could run the tool without asking while it wrote state.
 _READ_ONLY = {'check_pagespeed', 'diagnose_page', 'field_data', 'explain_lcp',
-              'compare', 'diagnose'}
+              'diagnose'}
 
-# Nothing here destroys anything. config.resolve_destination refuses to
-# overwrite and picks a free name instead, so saving twice leaves two files
-# rather than one file and a lost one. That also makes it not idempotent.
-_DESTRUCTIVE = set()
+# `report` destroys nothing: config.resolve_destination refuses to overwrite
+# and picks a free name instead, so saving twice leaves two files rather than
+# one file and a lost one. That also makes it not idempotent. `compare` with
+# save_baseline replaces the stored baseline in place, and the old one is gone
+# — the one write here that discards something, so by the same
+# tool-not-the-call reading it is destructive.
+_DESTRUCTIVE = {'compare'}
 _IDEMPOTENT = set()
 
 TITLES = {
