@@ -9,6 +9,8 @@ dependency. Clone it and run it.
 
 [Docs](https://considus.com/pagespeed-insights-mcp/) · [Install](https://considus.com/pagespeed-insights-mcp/install/) · [FAQ](https://considus.com/pagespeed-insights-mcp/faq/)
 
+[![pagespeed-insights-mcp MCP server](https://glama.ai/mcp/servers/Considus/pagespeed-insights-mcp/badges/score.svg)](https://glama.ai/mcp/servers/Considus/pagespeed-insights-mcp)
+
 ## Why another one
 
 There are already several PageSpeed MCP servers. As far as we can tell, every
