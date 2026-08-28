@@ -1647,6 +1647,24 @@ class Annotations(unittest.TestCase):
         self.assertFalse(ann['destructiveHint'])
         self.assertFalse(ann['idempotentHint'])
 
+    def test_compare_is_not_read_only_because_it_records_a_baseline(self):
+        # The first call on a URL writes the baseline to disk, and the
+        # description says so. Until 1.4.3 the annotation said readOnlyHint
+        # true anyway, which told a client it could run this without asking
+        # while it wrote state.
+        ann = self.mcp._annotations('compare')
+        self.assertFalse(ann['readOnlyHint'])
+        self.assertIn('destructiveHint', ann)
+
+    def test_compare_replaces_the_baseline_so_it_is_destructive(self):
+        # save_baseline replaces the stored baseline in place and the old one
+        # is gone, unlike report, which picks a free name. Same tool-not-the-
+        # call reading as report's file write. Not idempotent either: every
+        # call measures afresh, so the snapshot it writes differs each time.
+        ann = self.mcp._annotations('compare')
+        self.assertTrue(ann['destructiveHint'])
+        self.assertFalse(ann['idempotentHint'])
+
 
 class AnnotationsOverStdio(unittest.TestCase):
     """The real thing, in a subprocess, over the wire.
@@ -1685,6 +1703,8 @@ class AnnotationsOverStdio(unittest.TestCase):
         self.assertTrue(by_name['check_pagespeed']['annotations']['readOnlyHint'])
         self.assertFalse(by_name['report']['annotations']['readOnlyHint'])
         self.assertFalse(by_name['report']['annotations']['destructiveHint'])
+        self.assertFalse(by_name['compare']['annotations']['readOnlyHint'])
+        self.assertTrue(by_name['compare']['annotations']['destructiveHint'])
 
 
 class Manifest(unittest.TestCase):
