@@ -1988,6 +1988,29 @@ class JobsOutliveTheCall(unittest.TestCase):
         os.environ['PAGESPEED_INLINE_BUDGET'] = 'nonsense'
         self.assertEqual(self.mcp._inline_budget(), self.mcp.INLINE_BUDGET)
 
+    def test_a_job_runs_even_where_its_state_file_cannot_be_written(self):
+        """Found by starting the server the way a container does, with a HOME
+        it cannot write to. config.jobs_dir() raises while creating the
+        directory, and that used to take the whole job down and leave it
+        registered as running forever, consuming one of MAX_ACTIVE_JOBS with
+        no thread behind it. The file is a convenience for a poll landing in
+        another process. It must never be what decides whether work happens."""
+        unwritable = pathlib.Path(self.tmp.name) / 'no-entry'
+        unwritable.mkdir()
+        unwritable.chmod(0o500)
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(unwritable / 'cannot-create')
+        try:
+            blocks = self.mcp._run_or_defer(
+                'check_pagespeed', 'x', 999,
+                lambda report: [{'type': 'text', 'text': 'the report'}], None)
+            job_id = self._job_id(blocks)
+            self._wait_for(job_id, 'done')
+            self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}),
+                             [{'type': 'text', 'text': 'the report'}])
+        finally:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self.tmp.name
+            unwritable.chmod(0o700)
+
     def test_a_bad_request_is_refused_before_any_job_is_started(self):
         """Refusing up front was the existing contract and deferring must not
         turn a refusal into a job that fails three minutes later."""

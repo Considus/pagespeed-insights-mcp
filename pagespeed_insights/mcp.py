@@ -197,16 +197,23 @@ def _job_path(job_id):
 
 
 def _job_write(record):
-    """Atomically, because a poll can land in another process mid-write."""
-    path = _job_path(record['id'])
-    tmp = path.with_name(path.name + '.tmp')
+    """Atomically, because a poll can land in another process mid-write.
+
+    NEVER RAISES, and the directory lookup is inside the try for that reason.
+    The file is what lets ANOTHER process answer a poll, which is a
+    convenience. The measurement itself lives in memory in this process, so a
+    disk that will not take the file must cost the poll and nothing else.
+    Somewhere with an unwritable HOME, a container being the obvious one,
+    config.jobs_dir() raises while creating the directory, and leaving that
+    outside the try took the whole job down with it.
+    """
     try:
+        path = _job_path(record['id'])
+        tmp = path.with_name(path.name + '.tmp')
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(record, f)
         os.replace(tmp, path)
-    except OSError:
-        # The file is what lets ANOTHER process answer a poll. Losing it must
-        # not lose the measurement, which is in memory in this one.
+    except (OSError, ValueError):
         pass
 
 
@@ -285,7 +292,14 @@ def _start_job(tool, label, estimate, work):
                   'progress': 'starting', 'done': 0, 'total': 0,
                   'content': None, 'error': None, 'hint': ''}
         _JOBS[job_id] = record
-    _job_write(dict(record))
+    try:
+        _job_write(dict(record))
+    except Exception:
+        # Registered but never started is a slot consumed forever, and
+        # MAX_ACTIVE_JOBS then refuses work for a job that is not running.
+        with _JOBS_LOCK:
+            _JOBS.pop(job_id, None)
+        raise
 
     def _publish(update, finishing=False):
         # THE FILE IS WRITTEN BEFORE MEMORY IS UPDATED, and the order is the
