@@ -292,14 +292,18 @@ def measure(url, strategy='mobile', runs=5, key=None, progress=None,
     progress(distinct, target, url, strategy, fresh) fires after EVERY call,
     with `fresh` saying whether that call produced a new distinct analysis.
 
-    Firing on every call rather than only on new analyses is not cosmetic, it
-    is what makes long collections possible at all. MCP clients reset their
-    request timeout when a progress notification arrives, and Google produces a
-    genuinely new analysis only about once a minute. A callback that fired only
-    on new analyses therefore beat at roughly 60s intervals, which is at or past
-    the default timeout of most clients: measured on 2026-08-05, a 2-run report
-    emitted its two notifications 58 seconds apart and the client gave up.
-    Polling every 15s gives a heartbeat four times inside that window.
+    Firing on every call rather than only on new analyses keeps the reported
+    count moving while a collection runs. Google produces a genuinely new
+    analysis only about once a minute, so a callback that fired only on new
+    analyses reported at roughly 60s intervals: measured on 2026-08-05, a 2-run
+    report emitted its two notifications 58 seconds apart. Polling every 15s
+    reports four times inside that window.
+
+    This used to be described as what held a client's request timeout open.
+    It is not. Measured 2026-08-29, the clients in use send no progress token
+    at all, and Claude Code's timeout is a hard wall that progress does not
+    move. Anything longer than about a minute is collected as a background job
+    instead, and this callback feeds that job's progress. See mcp.py.
 
     Callers that count analyses must therefore check `fresh` rather than
     counting calls to this.

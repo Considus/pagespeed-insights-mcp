@@ -156,6 +156,7 @@ saying otherwise sets up a failure the reader will discover later.
   well as after: the first call records the baseline and there is no way to
   reconstruct one afterwards. If they have already made the change and no
   baseline exists, say so plainly rather than measuring once and guessing.
+- **`check_status`** to collect anything that came back as a job id. See below.
 - **`diagnose`** when anything looks wrong. It separates a configuration
   problem from a slow page in about two seconds.
 
@@ -164,6 +165,27 @@ once a minute and replays a cached result in between. That is the tool
 collecting genuinely distinct measurements. Do not offer to speed it up by
 reducing `runs` below the default and then quote the result as though it were
 the same thing.
+
+## A job id is not the answer, it is a receipt
+
+`check_pagespeed`, `report`, `diagnose_page` and `compare` return a job id
+rather than a result whenever the work will not fit inside one tool call, which
+is almost always. Collect it with `check_status`, passing the id, about every
+fifteen seconds until it reports done. `check_status` returns immediately every
+time, and when the measurement finishes it returns exactly what the tool would
+have returned.
+
+- **Do not report a job id to the user as though it were a measurement.** Poll
+  until you have the result, then answer the question they actually asked.
+- **Do not start the same measurement again while one is running.** It will not
+  arrive sooner. The wait is Google re-analysing the URL about once a minute,
+  and a second job just competes with the first.
+- **Do not fill the wait with a shorter run.** A `runs=1` check answers at once
+  and is the single noisy analysis this whole server exists to refuse. Quoting
+  it while the real measurement is still collecting is the exact failure the
+  spread is there to prevent.
+- If `check_status` says the job is lost, the server was restarted while it
+  ran. Say so and start it again, rather than quietly measuring once instead.
 
 ## Fewer analyses than asked for is the headline, not a footnote
 
@@ -183,10 +205,17 @@ analyses would almost certainly show a wider range.
   spreads as equivalent.
 
 If a call times out, say so plainly rather than quietly retrying with fewer
-runs. The server sends a progress notification every ten seconds so that a
-multi-minute measurement survives a client's request timeout, so a timeout means
-something is wrong rather than something is slow. That is worth reporting rather
-than working around.
+runs. Nothing should take long enough to time out any more, because anything
+past about a minute comes back as a job id instead, so a timeout means
+something is wrong rather than something is slow. That is worth reporting
+rather than working around.
+
+Do not rely on progress notifications to hold a call open. The server sends
+them whenever a client asks for them, but measured on 2026-08-29 against
+Claude's desktop app and Claude Code, neither client asks, and Claude Code's own
+timeout schema states that progress notifications do not extend its limit. That
+belief is why long checks used to fail, and it is why the work now leaves the
+call instead.
 
 ## Phrases to avoid
 

@@ -192,13 +192,52 @@ path.
 
 | Tool | What it does |
 |---|---|
-| `report` | Everything in one call, and the one most people want. Scores with their spread, real-user data if Google has any, and what is failing ranked by what fixing it is worth. Returns a self-contained HTML page as well, to save or forward. |
-| `check_pagespeed` | Scores only. Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). |
-| `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. |
+| `report` | Everything in one call, and the one most people want. Scores with their spread, real-user data if Google has any, and what is failing ranked by what fixing it is worth. Returns a self-contained HTML page as well, to save or forward. Comes back as a job id. |
+| `check_pagespeed` | Scores only. Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). Anything past a single analysis comes back as a job id. |
+| `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. Comes back as a job id. |
 | `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
 | `explain_lcp` | Which of four phases owns a slow Largest Contentful Paint: server response, the wait before the browser starts fetching the largest image, the download, then the wait before it is painted. One call, answers at once. |
-| `compare` | Did the change actually help. Measures now and compares against a saved baseline, giving a verdict only where the two ranges do not overlap. |
+| `compare` | Did the change actually help. Measures now and compares against a saved baseline, giving a verdict only where the two ranges do not overlap. Comes back as a job id. |
+| `check_status` | Collects a measurement that was handed back as a job id. Answers immediately, every time. `job_id`, or nothing at all for the most recent one. |
 | `diagnose` | Whether the key works, whether the Chrome UX Report is reachable, and which baselines are held, without disclosing the key. |
+
+### Measurements that outlive the call
+
+Every long check used to time out, and the server was fine the whole time. It
+carried on measuring, finished the job properly, and posted the answer into a
+pipe nobody was reading any more.
+
+The client had given up at 60 seconds. That is a hard wall on a single tool
+call, and progress notifications don't move it, which is worth knowing because
+this server sends them and they look like they should. An honest measurement
+can't fit inside it. Google re-analyses a URL about once a minute, so five
+distinct analyses take about 150 seconds, and asking harder doesn't help, it
+just hands you the same cached analysis five times.
+
+The work doesn't happen inside the call any more. `check_pagespeed`, `report`,
+`diagnose_page` and `compare` start the measurement, hand back a job id, and
+keep going. Your assistant collects it with `check_status`, every 15 seconds or
+so, and `check_status` always answers straight away. When the measurement
+lands it returns exactly what the tool would have returned, so nothing
+downstream can tell which route it took.
+
+You don't have to do anything. The assistant polls for you.
+
+One thing still answers on the spot, `check_pagespeed` with one URL and `runs`
+set to 1. That is a single analysis with no spread, which is the noisy one-run
+number this whole package exists to refuse, and the output says so in as many
+words.
+
+A finished job sits there for an hour, in case you want to read it twice. A
+running one dies if the server restarts, which clients do once they have been
+idle a while, and `check_status` tells you that happened rather than leaving
+you polling something that will never finish.
+
+If your client waits longer than 60 seconds, tell the server and it will do
+more inside the call. Set `inline_budget_seconds` in `settings.json`, or the
+`PAGESPEED_INLINE_BUDGET` environment variable. It can't work this out on its
+own, the timeout isn't in the protocol and the handful of environment variables
+a server inherits doesn't carry it either.
 
 Two things about `explain_lcp` are worth knowing before you read one, and both
 are printed in every answer. The four phases do **not** add up to the LCP, and
@@ -391,6 +430,17 @@ with no login in the way and no geographic block.
 **It could not reach Google at all.** Network, DNS or a timeout, already retried
 with backoff by the time it says so.
 
+**Your assistant says the request timed out.** Nothing here should run long
+enough for that any more, because anything past about a minute comes back as a
+job id instead. If you see it, something is set to do more inside the call than
+your client will sit through, so look at `inline_budget_seconds` in
+`settings.json` and at the `PAGESPEED_INLINE_BUDGET` variable, and lower it or
+take it out.
+
+**A job says it is lost.** The server was restarted while it was measuring,
+which is what a client does to a server that has been sitting idle. Start the
+measurement again and let the assistant keep polling while it runs.
+
 When you can't tell which of these you have, `diagnose` answers it. Whether the
 key works, whether the Chrome UX Report is reachable, and which baselines are
 held, none of it disclosing the key.
@@ -464,9 +514,14 @@ profile, which is restricted to you by default. That is a real protection, but
 it is inherited rather than set by this tool, so it is worth knowing which one
 you are relying on.
 
+Running measurements keep their state in a `jobs` folder beside the settings,
+one small file each, deleted an hour after they finish. That is what lets a poll
+find its answer when the client has quietly restarted the server underneath it.
+
 `PAGESPEED_CONFIG_DIR` moves that wherever you like, and `PAGESPEED_API_KEY`
 overrides the stored key for anyone who would rather keep it in their own secret
-manager.
+manager. `PAGESPEED_INLINE_BUDGET` says how many seconds of work to do inside a
+single tool call before handing back a job id instead, and 45 is the default.
 
 The key is a file rather than an entry in your system keychain, and that is a
 deliberate trade worth being straight about. Reaching the keychain portably
@@ -538,6 +593,8 @@ There is no Considus server in this. No account, no telemetry, no crash reportin
 Baselines, so a later run can tell you whether a change is real or noise, sit beside it.
 
 HTML reports go to the reports folder next to those settings, or to a folder you named in the conversation. Nothing writes to a folder that does not already exist, and nothing is ever overwritten.
+
+A running measurement writes its progress and then its result to a small file in the `jobs` folder beside the settings, because a poll and the measurement it is asking about are not always in the same server process. Those files hold measurements of public pages and nothing else, and they are deleted an hour after the job finishes.
 
 All of it is on your own disk and all of it is yours to delete. Deleting `settings.json` removes the key from the machine.
 
