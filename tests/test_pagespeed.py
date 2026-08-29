@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1305,7 +1307,8 @@ class McpProtocol(unittest.TestCase):
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
                          {'check_pagespeed', 'report', 'diagnose_page',
-                          'field_data', 'explain_lcp', 'compare', 'diagnose'})
+                          'field_data', 'explain_lcp', 'compare',
+                          'check_status', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])
@@ -1773,6 +1776,233 @@ class BlankConfigCountsAsUnset(unittest.TestCase):
             finally:
                 os.environ.pop('PAGESPEED_API_KEY', None)
                 os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+
+
+class JobsOutliveTheCall(unittest.TestCase):
+    """A measurement takes minutes and the client gives up in sixty seconds.
+
+    Measured 2026-08-29 against Claude's desktop app and Claude Code: neither
+    attaches `_meta.progressToken` to a tool call, so the keepalive never
+    starts, and Claude Code's own per-server timeout schema settles the rest —
+    "Hard wall-clock limit per call; progress notifications do not extend it."
+    One analysis of example.com took 8.4s and two took 68.3s, so the honest
+    amount of work that fits inside one call is one analysis, which is the
+    single noisy run this package exists to refuse.
+
+    So the work leaves the call. These are the guarantees that makes safe.
+    """
+
+    def setUp(self):
+        from pagespeed_insights import mcp
+        self.mcp = mcp
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ['PAGESPEED_CONFIG_DIR'] = self.tmp.name
+        os.environ['PAGESPEED_INLINE_BUDGET'] = '45'
+        mcp._JOBS.clear()
+
+    def tearDown(self):
+        # Workers write into the temporary config directory, so removing it
+        # while one is mid-write is a test failing on its own tidying up.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not [j for j in list(self.mcp._JOBS.values())
+                    if j.get('status') == 'running']:
+                break
+            time.sleep(0.01)
+        self.mcp._JOBS.clear()
+        os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        os.environ.pop('PAGESPEED_INLINE_BUDGET', None)
+        self.tmp.cleanup()
+
+    def _wait_for(self, job_id, status, timeout=5):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            record = self.mcp._job_read(job_id)
+            if record and record.get('status') == status:
+                return record
+            time.sleep(0.01)
+        self.fail(f'job {job_id} never reached {status!r}')
+
+    @staticmethod
+    def _job_id(blocks):
+        return re.search(r'Started job (\w+)', blocks[0]['text']).group(1)
+
+    def test_work_that_fits_is_still_answered_inside_the_call(self):
+        """Deferring an eight-second check would be ceremony for nothing."""
+        blocks = self.mcp._run_or_defer(
+            'check_pagespeed', 'one analysis', 12,
+            lambda report: [{'type': 'text', 'text': 'the report'}], None)
+        self.assertEqual(blocks[0]['text'], 'the report')
+        self.assertEqual(self.mcp._JOBS, {})
+
+    def test_work_that_does_not_fit_is_handed_back_as_a_job(self):
+        blocks = self.mcp._run_or_defer(
+            'check_pagespeed', 'five analyses', 252,
+            lambda report: [{'type': 'text', 'text': 'the report'}], None)
+        self.assertIn('check_status', blocks[0]['text'])
+        job_id = self._job_id(blocks)
+        self._wait_for(job_id, 'done')
+        collected = self.mcp.tool_check_status({'job_id': job_id})
+        self.assertEqual(collected, [{'type': 'text', 'text': 'the report'}])
+
+    def test_the_collected_answer_is_what_the_inline_path_would_have_given(self):
+        """A caller must not be able to tell from the answer which route it
+        took, or every consumer needs two code paths."""
+        def work(report):
+            return [{'type': 'text', 'text': 'body'},
+                    {'type': 'text', 'text': '{"json": true}'}]
+
+        inline = self.mcp._run_or_defer('check_pagespeed', 'x', 1, work, None)
+        deferred = self.mcp._run_or_defer('check_pagespeed', 'x', 999, work, None)
+        job_id = self._job_id(deferred)
+        self._wait_for(job_id, 'done')
+        self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}), inline)
+
+    def test_a_poll_answers_at_once_while_the_work_is_still_running(self):
+        """The whole point. A poll that could block has reinvented the
+        problem."""
+        release = threading.Event()
+
+        def work(report):
+            release.wait(5)
+            return [{'type': 'text', 'text': 'late'}]
+
+        blocks = self.mcp._run_or_defer('check_pagespeed', 'slow', 999, work, None)
+        job_id = self._job_id(blocks)
+        try:
+            started = time.monotonic()
+            answer = self.mcp.tool_check_status({'job_id': job_id})
+            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertIn('running', answer[0]['text'])
+        finally:
+            release.set()
+        self._wait_for(job_id, 'done')
+
+    def test_progress_reaches_the_poll(self):
+        release = threading.Event()
+
+        def work(report):
+            report(2, 5, 'https://example.com [mobile] 2/5 distinct analyses')
+            release.wait(5)
+            return [{'type': 'text', 'text': 'late'}]
+
+        blocks = self.mcp._run_or_defer('check_pagespeed', 'slow', 999, work, None)
+        job_id = self._job_id(blocks)
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                text = self.mcp.tool_check_status({'job_id': job_id})[0]['text']
+                if '2/5 distinct analyses' in text:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail('progress never reached the poll')
+            self.assertIn('2 of 5 distinct analyses', text)
+        finally:
+            release.set()
+        self._wait_for(job_id, 'done')
+
+    def test_a_failed_job_is_reported_rather_than_polled_forever(self):
+        def raiser(report):
+            raise ValueError('the measurement broke')
+
+        blocks = self.mcp._run_or_defer('check_pagespeed', 'x', 999, raiser, None)
+        job_id = self._job_id(blocks)
+        self._wait_for(job_id, 'failed')
+        with self.assertRaises(self.mcp.ToolError) as caught:
+            self.mcp.tool_check_status({'job_id': job_id})
+        self.assertIn('the measurement broke', str(caught.exception))
+
+    def test_a_job_is_findable_by_a_process_that_never_ran_it(self):
+        """The desktop app reaps an idle stdio server and spawns a fresh one,
+        and more than one can be alive at once, so the poll and the worker are
+        not reliably in the same process. Memory alone would lose the answer."""
+        blocks = self.mcp._run_or_defer(
+            'check_pagespeed', 'x', 999,
+            lambda report: [{'type': 'text', 'text': 'the report'}], None)
+        job_id = self._job_id(blocks)
+        self._wait_for(job_id, 'done')
+        self.mcp._JOBS.clear()                       # a different process
+        self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}),
+                         [{'type': 'text', 'text': 'the report'}])
+
+    def test_a_job_whose_worker_died_is_reported_lost(self):
+        """Reported, because a job silently stuck on 'running' is a caller
+        polling forever."""
+        record = {'id': 'deadbeef', 'tool': 'check_pagespeed', 'label': 'x',
+                  'status': 'running', 'started': time.time() - 9000,
+                  'updated': time.time() - 9000, 'finished': None,
+                  'estimate': 300, 'progress': 'measuring', 'done': 1,
+                  'total': 5, 'content': None, 'error': None, 'hint': ''}
+        self.mcp._job_write(record)
+        with self.assertRaises(self.mcp.ToolError) as caught:
+            self.mcp.tool_check_status({'job_id': 'deadbeef'})
+        self.assertIn('lost', str(caught.exception))
+
+    def test_an_unknown_job_says_so_rather_than_hanging(self):
+        with self.assertRaises(self.mcp.ToolError):
+            self.mcp.tool_check_status({'job_id': 'nosuchjob'})
+
+    def test_the_most_recent_job_is_the_default(self):
+        """Losing the id should not lose the measurement."""
+        blocks = self.mcp._run_or_defer(
+            'check_pagespeed', 'x', 999,
+            lambda report: [{'type': 'text', 'text': 'the report'}], None)
+        self._wait_for(self._job_id(blocks), 'done')
+        self.assertEqual(self.mcp.tool_check_status({}),
+                         [{'type': 'text', 'text': 'the report'}])
+
+    def test_more_jobs_than_the_server_will_run_are_refused(self):
+        """Running more at once finishes none of them sooner, because the wait
+        is Google's re-analysis interval and not our own rate."""
+        release = threading.Event()
+
+        def work(report):
+            release.wait(5)
+            return []
+
+        for _ in range(self.mcp.MAX_ACTIVE_JOBS):
+            self.mcp._run_or_defer('check_pagespeed', 'x', 999, work, None)
+        try:
+            with self.assertRaises(self.mcp.ToolError) as caught:
+                self.mcp._run_or_defer('check_pagespeed', 'x', 999,
+                                       lambda report: [], None)
+            self.assertIn('already running', str(caught.exception))
+        finally:
+            release.set()
+
+    def test_the_estimate_matches_what_was_measured(self):
+        """8.4s for one analysis and 68.3s for two, against example.com on
+        2026-08-29. One fits inside a sixty-second call and two do not, and
+        that boundary is the only thing the routing turns on."""
+        budget = self.mcp._inline_budget()
+        self.assertLessEqual(self.mcp._job_estimate(1, 1), budget)
+        self.assertGreater(self.mcp._job_estimate(1, 2), budget)
+        self.assertGreater(self.mcp._job_estimate(1, 5), budget)
+
+    def test_the_budget_can_be_told_what_the_client_actually_allows(self):
+        """The timeout is not in the protocol and the environment a stdio
+        server inherits does not carry it, so it has to be answerable."""
+        os.environ['PAGESPEED_INLINE_BUDGET'] = '600'
+        self.assertEqual(self.mcp._inline_budget(), 600)
+        os.environ['PAGESPEED_INLINE_BUDGET'] = 'nonsense'
+        self.assertEqual(self.mcp._inline_budget(), self.mcp.INLINE_BUDGET)
+
+    def test_a_bad_request_is_refused_before_any_job_is_started(self):
+        """Refusing up front was the existing contract and deferring must not
+        turn a refusal into a job that fails three minutes later."""
+        sent = []
+        real_send, self.mcp._send = self.mcp._send, sent.append
+        try:
+            self.mcp.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                             'params': {'name': 'check_pagespeed',
+                                        'arguments': {'urls': ['file:///etc/passwd'],
+                                                      'runs': 5}}})
+        finally:
+            self.mcp._send = real_send
+        self.assertTrue(sent[0]['result']['isError'])
+        self.assertEqual(self.mcp._JOBS, {})
+        self.assertEqual(list(config.jobs_dir().glob('*.json')), [])
 
 
 if __name__ == '__main__':

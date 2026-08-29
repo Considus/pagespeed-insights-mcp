@@ -35,9 +35,9 @@ EXIT = {QuotaExhausted: 3, CredentialRejected: 4, PageUnreachable: 5, Unavailabl
 def _progress(distinct, target, url, strategy, fresh):
     """Only the calls that produced something get a line.
 
-    The MCP face notifies on every poll to hold the client's timeout open. A
-    terminal has no timeout to hold open, and a line every 15 seconds saying
-    the number has not moved is noise.
+    The MCP face reports on every poll, because a background job's progress
+    line has to keep moving. A terminal has neither a job nor a timeout, and a
+    line every 15 seconds saying the number has not moved is noise.
     """
     if fresh:
         print(f'  {url} [{strategy}] {distinct}/{target} distinct analyses...',

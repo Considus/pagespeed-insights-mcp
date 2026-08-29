@@ -146,6 +146,21 @@ def reports_dir():
     return d
 
 
+def jobs_dir():
+    """Where a running measurement keeps its state, beside the settings.
+
+    A measurement outlives the call that started it, and on the clients
+    measured so far it can outlive the SERVER PROCESS too: the desktop app
+    reaps an idle stdio server and spawns a fresh one, and more than one can be
+    alive at once. State held only in memory is therefore state that a poll
+    arriving at the wrong process cannot see. A file per job is what makes the
+    answer findable by whichever process is asked for it.
+    """
+    d = config_dir() / 'jobs'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def safe_filename(name, fallback):
     """A file name, never a path.
 

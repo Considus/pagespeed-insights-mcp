@@ -15,11 +15,24 @@ package prints to stdout except this module, and the one function that does
 write to stderr (the CLI's progress) is not reachable from here.
 
 Long calls get killed. A five-run check on two URLs is several minutes, which
-is past the default timeout of most clients. Clients reset that timeout on
-progress notifications, so this emits them whenever the caller supplied a
-progress token. That is what makes an honest multi-minute measurement possible
-at all — without it the only way to answer in time is to run once and quote
-noise, which is what everything else does.
+is past the default timeout of most clients. This emitted progress
+notifications whenever the caller supplied a token, on the understanding that
+clients reset the timeout when one arrives.
+
+THAT UNDERSTANDING WAS WRONG, and it cost the tool. Measured 2026-08-29:
+Claude's desktop app and Claude Code both attach `_meta.progressToken` only
+when the caller passes an onprogress handler, no tool-call path in either
+passes one, so no token ever arrives and the keepalive never starts. Claude
+Code's own per-server timeout schema says the rest outright — "Hard wall-clock
+limit per call; progress notifications do not extend it." The limit measured
+was 60 seconds, against a default check budgeted at 300.
+
+Whether some client once honoured it is not something these measurements can
+say, and the note below about notification CADENCE still stands on its own
+evidence. What they do say is that a multi-minute answer cannot depend on it.
+So the work no longer happens inside the call: see the jobs section further
+down. The notifications stay because they are correct and cost one JSON line
+for a client that does ask.
 
 HOW OFTEN IS THE WHOLE PROBLEM, and getting it wrong made the feature useless
 while looking implemented. Notifications originally fired only when a new
@@ -42,10 +55,12 @@ one corrupt line and a server that appears to die for no reason, which is the
 first hazard above arriving through the fix for the second.
 """
 import json
+import os
 import sys
 import threading
 import time
 import urllib.parse
+import uuid
 
 from . import __version__, compare, config, crux, lcp, psi, render, report
 from .errors import CruxUnavailable, PageSpeedError
@@ -87,6 +102,252 @@ def _urls(raw):
     return urls
 
 
+# ----------------------------------------------------------------------------
+# Jobs: how a measurement outlives the call that asked for it
+# ----------------------------------------------------------------------------
+# The progress notifications further down are correct, and against the clients
+# measured on 2026-08-29 they are also inert. Claude's desktop app and Claude
+# Code both attach `_meta.progressToken` only when the caller supplies an
+# onprogress handler, and no tool-call path in either supplies one, so the
+# token never arrives and the keepalive never starts. Claude Code's own
+# per-server timeout schema settles the rest in its own words: "Hard wall-clock
+# limit per call; progress notifications do not extend it."
+#
+# The limit measured there was 60 seconds, twice. This server budgets a default
+# check at 300. Google re-analyses a URL about once a minute, so five distinct
+# analyses take about 150 seconds and two already take 68 — measured against
+# example.com the same day, 8.4s for one and 68.3s for two. Inside one call
+# this server can therefore honestly collect exactly ONE analysis, which is the
+# single noisy run the whole package exists to refuse.
+#
+# So work that will not fit does not happen inside the call. It starts a worker
+# and hands back a job id, every call returns in well under a second, and the
+# caller polls check_status. Nothing then depends on what the client's timeout
+# is, or on whether it honours progress at all.
+#
+# State goes to a file as well as memory because the job can outlive the
+# PROCESS. The desktop app reaps an idle stdio server and spawns a fresh one,
+# and more than one can be alive at once — measured, four distinct server PIDs
+# in one afternoon. A poll that lands in a different process finds the answer
+# on disk or it finds nothing.
+
+# Seconds of work to attempt inside one tool call. Under the smallest client
+# timeout measured, with room left for the reply itself.
+INLINE_BUDGET = 45
+# What a collection really costs, which is not its budget. psi.measure's budget
+# is a ceiling; this is the expectation, and the difference is what decides
+# whether a call can be answered inline at all.
+FIRST_ANALYSIS_SECONDS = 12
+EXTRA_ANALYSIS_SECONDS = 60
+# Threads, not requests. Running more at once finishes none of them sooner,
+# because the wait is Google's re-analysis interval rather than our own rate.
+MAX_ACTIVE_JOBS = 4
+# A finished job is kept this long so a poll can be repeated, then deleted.
+JOB_TTL_SECONDS = 3600
+# A running job touches its file on every poll of Google, which is every ~15s,
+# EXCEPT while a single call blocks. That block is bounded by psi.fetch's own
+# 180s timeout, so anything quiet for longer than this has died rather than
+# slowed down.
+JOB_STALE_SECONDS = 240
+
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _job_estimate(jobs, runs):
+    """Seconds a collection will really take.
+
+    The first analysis arrives as fast as Lighthouse runs. Every one after it
+    waits for Google to produce a genuinely new one, which is about a minute
+    and which asking harder does not change.
+    """
+    return jobs * (FIRST_ANALYSIS_SECONDS
+                   + max(0, runs - 1) * EXTRA_ANALYSIS_SECONDS)
+
+
+def _duration(seconds):
+    seconds = int(round(seconds))
+    if seconds < 120:
+        return f'{seconds} seconds'
+    return f'{seconds // 60} to {seconds // 60 + 1} minutes'
+
+
+def _inline_budget():
+    """How long this server may spend inside one call before deferring.
+
+    The client's timeout is not in the protocol and cannot be read from the
+    environment either: the variables a stdio server inherits from the desktop
+    app were measured down to seven, none of them a timeout. So it is a
+    default, and anyone whose client waits longer says so rather than having
+    this guess — PAGESPEED_INLINE_BUDGET, or inline_budget_seconds in
+    settings.json.
+    """
+    raw = os.environ.get('PAGESPEED_INLINE_BUDGET', '').strip()
+    if not raw:
+        raw = config.load().get('inline_budget_seconds')
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return INLINE_BUDGET
+    return value if value > 0 else INLINE_BUDGET
+
+
+def _job_path(job_id):
+    return config.jobs_dir() / f'{job_id}.json'
+
+
+def _job_write(record):
+    """Atomically, because a poll can land in another process mid-write."""
+    path = _job_path(record['id'])
+    tmp = path.with_name(path.name + '.tmp')
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(record, f)
+        os.replace(tmp, path)
+    except OSError:
+        # The file is what lets ANOTHER process answer a poll. Losing it must
+        # not lose the measurement, which is in memory in this one.
+        pass
+
+
+def _job_read(job_id):
+    with _JOBS_LOCK:
+        record = _JOBS.get(job_id)
+    if record is not None:
+        return dict(record)
+    try:
+        with open(_job_path(job_id), encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _job_files():
+    try:
+        return sorted(config.jobs_dir().glob('*.json'))
+    except OSError:
+        return []
+
+
+def _job_prune():
+    """Drop what is past its keep-by. Called when a job starts, so a server
+    nobody is using writes nothing and deletes nothing."""
+    now = time.time()
+    for path in _job_files():
+        try:
+            if now - path.stat().st_mtime > JOB_TTL_SECONDS:
+                path.unlink()
+        except OSError:
+            pass
+    with _JOBS_LOCK:
+        for job_id in [k for k, v in _JOBS.items()
+                       if now - v.get('updated', 0) > JOB_TTL_SECONDS]:
+            _JOBS.pop(job_id, None)
+
+
+def _latest_job_id():
+    """The most recently started job this machine knows about, so a caller
+    that lost the id is not stuck."""
+    records = []
+    with _JOBS_LOCK:
+        records.extend(dict(v) for v in _JOBS.values())
+    for path in _job_files():
+        try:
+            with open(path, encoding='utf-8') as f:
+                records.append(json.load(f))
+        except (OSError, ValueError):
+            continue
+    best, best_at = None, None
+    for record in records:
+        started = record.get('started') or 0
+        if best_at is None or started > best_at:
+            best, best_at = record.get('id'), started
+    return best
+
+
+def _start_job(tool, label, estimate, work):
+    """Hand the work to a thread and hand the caller a receipt."""
+    _job_prune()
+    with _JOBS_LOCK:
+        running = [j for j in _JOBS.values() if j.get('status') == 'running']
+        if len(running) >= MAX_ACTIVE_JOBS:
+            raise ToolError(
+                f'{len(running)} measurements are already running and this '
+                f'server will not start more than {MAX_ACTIVE_JOBS} at once. '
+                'Collect one with check_status first. They are slow because '
+                'Google re-analyses a URL about once a minute, so starting '
+                'more of them at once does not finish any of them sooner.')
+        job_id = uuid.uuid4().hex[:8]
+        now = time.time()
+        record = {'id': job_id, 'tool': tool, 'label': label,
+                  'status': 'running', 'started': now, 'updated': now,
+                  'finished': None, 'estimate': estimate,
+                  'progress': 'starting', 'done': 0, 'total': 0,
+                  'content': None, 'error': None, 'hint': ''}
+        _JOBS[job_id] = record
+    _job_write(dict(record))
+
+    def _publish(update, finishing=False):
+        # THE FILE IS WRITTEN BEFORE MEMORY IS UPDATED, and the order is the
+        # point. The file is what another process reads, so a run that
+        # published to memory first would have a window where this process
+        # says done and every other one still says running. Leading with the
+        # durable copy means no reader ever sees the answer go backwards. The
+        # write stays outside the lock, because a poll must not wait on disk.
+        with _JOBS_LOCK:
+            live = _JOBS.get(job_id)
+            if live is None:
+                return
+            snapshot = dict(live)
+        snapshot.update(update)
+        snapshot['updated'] = time.time()
+        if finishing:
+            snapshot['finished'] = snapshot['updated']
+        _job_write(snapshot)
+        with _JOBS_LOCK:
+            if job_id in _JOBS:
+                _JOBS[job_id] = snapshot
+
+    def note(done, total, message):
+        _publish({'done': done, 'total': total, 'progress': message})
+
+    def run():
+        try:
+            update = {'status': 'done', 'content': work(note),
+                      'progress': 'complete'}
+        except (ToolError, PageSpeedError) as e:
+            update = {'status': 'failed',
+                      'error': e.message if isinstance(e, PageSpeedError) else str(e),
+                      'hint': getattr(e, 'hint', '') or ''}
+        except Exception as e:
+            # A worker dying silently would leave the caller polling a job that
+            # never finishes, which is worse than any error text.
+            update = {'status': 'failed',
+                      'error': f'Unexpected error in {tool}: {e}'}
+        _publish(update, finishing=True)
+
+    threading.Thread(target=run, daemon=True).start()
+    return [{'type': 'text', 'text':
+             f'Started job {job_id} — {label}.\n'
+             f'About {_duration(estimate)}. Google re-analyses a URL only about '
+             'once a minute, so this is time rather than requests and asking '
+             'harder will not speed it up.\n\n'
+             f'Collect it with check_status, job_id "{job_id}". Poll about every '
+             '15 seconds until it reports done. The work carries on between '
+             'polls. If this server is restarted while it runs the job is lost, '
+             'and check_status says so rather than returning nothing.'}]
+
+
+def _run_or_defer(tool, label, estimate, work, progress):
+    """Inline when it fits inside one call, a job when it does not."""
+    if estimate <= _inline_budget():
+        def report(done, total, message):
+            if progress:
+                progress(done, total, message)
+        return work(report)
+    return _start_job(tool, label, estimate, work)
+
+
 def tool_check_pagespeed(args, progress=None):
     urls = _urls(args.get('urls'))
     strategy = args.get('strategy') or 'mobile'
@@ -115,30 +376,37 @@ def tool_check_pagespeed(args, progress=None):
 
     key = config.api_key()
     target = jobs * runs
-    done = [0]
 
-    def tick(distinct, _target, url, strat, fresh):
-        # Counts ANALYSES but notifies on every CALL. The count has to reflect
-        # measurements collected rather than requests spent, and the
-        # notification has to arrive often enough to hold the client's timeout
-        # open, and those are different rates.
-        if fresh:
-            done[0] += 1
-        if progress:
-            progress(done[0], target,
-                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+    def work(report_progress):
+        done = [0]
 
-    reports, results = [], []
-    for url in urls:
-        for strat in strategies:
-            res = psi.measure(url, strat, runs, key, progress=tick)
-            results.append(res)
-            reports.append(render.result(res))
+        def tick(distinct, _target, url, strat, fresh):
+            # Counts ANALYSES but reports on every CALL. The count has to
+            # reflect measurements collected rather than requests spent, and
+            # the report has to arrive often enough to show the thing is alive,
+            # and those are different rates.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], target,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
-    payload = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
-               'key_in_use': bool(key), 'results': results}
-    return [{'type': 'text', 'text': '\n\n'.join(reports) + '\n\n' + render.NOISE_NOTE},
-            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+        reports, results = [], []
+        for url in urls:
+            for strat in strategies:
+                res = psi.measure(url, strat, runs, key, progress=tick)
+                results.append(res)
+                reports.append(render.result(res))
+
+        payload = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                   'key_in_use': bool(key), 'results': results}
+        return [{'type': 'text',
+                 'text': '\n\n'.join(reports) + '\n\n' + render.NOISE_NOTE},
+                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+    label = (f"{', '.join(urls)} [{'/'.join(strategies)}], "
+             f'{runs} distinct analyses')
+    return _run_or_defer('check_pagespeed', label,
+                         _job_estimate(jobs, runs), work, progress)
 
 
 def tool_diagnose_page(args, progress=None):
@@ -150,29 +418,36 @@ def tool_diagnose_page(args, progress=None):
                         'two there is nothing to check a finding against, so a '
                         'one-off failure would be reported as a fact.')
     key = config.api_key()
-    done = [0]
 
-    def tick(distinct, _t, url, strat, fresh):
-        # Counts analyses, notifies on every call. See psi.measure.
-        if fresh:
-            done[0] += 1
-        if progress:
-            progress(done[0], len(urls) * runs,
-                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+    def work(report_progress):
+        done = [0]
 
-    texts, payload = [], {}
-    for url in urls:
-        res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
-        found = res.get('findings') or []
-        texts.append(render.findings(found, url))
-        for w in res.get('warnings') or []:
-            texts.append(f'  Google warns: {w}')
-        payload[url] = {'analyses': res['analyses'], 'findings': found,
-                        'lighthouse_version': res.get('lighthouse_version'),
-                        'warnings': res.get('warnings') or []}
+        def tick(distinct, _t, url, strat, fresh):
+            # Counts analyses, reports on every call. See psi.measure.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], len(urls) * runs,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
-    return [{'type': 'text', 'text': '\n\n'.join(texts) + '\n\n' + render.FINDINGS_NOTE},
-            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+        texts, payload = [], {}
+        for url in urls:
+            res = psi.measure(url, 'mobile', runs, key, progress=tick,
+                              with_findings=True)
+            found = res.get('findings') or []
+            texts.append(render.findings(found, url))
+            for w in res.get('warnings') or []:
+                texts.append(f'  Google warns: {w}')
+            payload[url] = {'analyses': res['analyses'], 'findings': found,
+                            'lighthouse_version': res.get('lighthouse_version'),
+                            'warnings': res.get('warnings') or []}
+
+        return [{'type': 'text',
+                 'text': '\n\n'.join(texts) + '\n\n' + render.FINDINGS_NOTE},
+                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+    label = f"{', '.join(urls)} [mobile], findings over {runs} distinct analyses"
+    return _run_or_defer('diagnose_page', label,
+                         _job_estimate(len(urls), runs), work, progress)
 
 
 def _report_name(url):
@@ -211,65 +486,71 @@ def tool_report(args, progress=None):
         except config.BadDestination as e:
             raise ToolError(str(e))
     key = config.api_key()
-    done = [0]
 
-    def tick(distinct, _t, url, strat, fresh):
-        # Counts analyses, notifies on every call. See psi.measure.
-        if fresh:
-            done[0] += 1
-        if progress:
-            progress(done[0], len(urls) * runs,
-                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+    def work(report_progress):
+        done = [0]
 
-    texts, results, field, findings_by_url = [], [], {}, {}
-    for url in urls:
-        res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
-        results.append(res)
-        findings_by_url[url] = res.get('findings') or []
-        texts.append(render.result(res))
+        def tick(distinct, _t, url, strat, fresh):
+            # Counts analyses, reports on every call. See psi.measure.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], len(urls) * runs,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
-        try:
-            rec = crux.record(url, key)
-            field[url] = {'record': rec}
-            texts.append(render.crux_record(rec, url))
-        except CruxUnavailable as e:
-            field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
-            # Not an error. Most sites have no field data and saying so plainly
-            # is the point, because a gap beside a good lab score reads as proof.
-            texts.append(f'{url}  [real users]\n  {e.message}\n  {e.hint}')
+        texts, results, field, findings_by_url = [], [], {}, {}
+        for url in urls:
+            res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
+            results.append(res)
+            findings_by_url[url] = res.get('findings') or []
+            texts.append(render.result(res))
 
-        texts.append(render.findings(findings_by_url[url], url))
-        for warning in res.get('warnings') or []:
-            texts.append(f'  Google warns: {warning}')
-
-    blocks = [{'type': 'text',
-               'text': '\n\n'.join(texts) + '\n\n' + render.NOISE_NOTE
-                       + '\n' + render.FINDINGS_NOTE}]
-    if want_html or writing:
-        # Fonts on when it lands on disk, off when it crosses the wire. They are
-        # 145KB of base64, 90% of the page and about 37,000 tokens, which is
-        # most of a context window spent on typography. On disk that is free and
-        # the page keeps its typography anywhere it is opened. Same renderer
-        # either way: a second one is how two versions start disagreeing about a
-        # number.
-        page = report.build(results, field=field, findings_by_url=findings_by_url,
-                            generated=time.strftime('%d %B %Y'),
-                            inline_fonts=bool(writing))
-        if writing:
             try:
-                destination.write_text(page, encoding='utf-8')
-            except OSError as e:
-                raise ToolError(f'Could not write {destination}: {e}')
-            blocks.insert(0, {'type': 'text',
-                              'text': f'Report written to {destination} '
-                                      f'({len(page.encode()) // 1024}KB, '
-                                      'self-contained, opens offline).'})
-        if want_html and not writing:
-            blocks.append({'type': 'text', 'text': page})
-    blocks.append({'type': 'text', 'text': json.dumps(
-        {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
-         'results': results, 'field': field}, indent=2)})
-    return blocks
+                rec = crux.record(url, key)
+                field[url] = {'record': rec}
+                texts.append(render.crux_record(rec, url))
+            except CruxUnavailable as e:
+                field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
+                # Not an error. Most sites have no field data and saying so plainly
+                # is the point, because a gap beside a good lab score reads as proof.
+                texts.append(f'{url}  [real users]\n  {e.message}\n  {e.hint}')
+
+            texts.append(render.findings(findings_by_url[url], url))
+            for warning in res.get('warnings') or []:
+                texts.append(f'  Google warns: {warning}')
+
+        blocks = [{'type': 'text',
+                   'text': '\n\n'.join(texts) + '\n\n' + render.NOISE_NOTE
+                           + '\n' + render.FINDINGS_NOTE}]
+        if want_html or writing:
+            # Fonts on when it lands on disk, off when it crosses the wire. They are
+            # 145KB of base64, 90% of the page and about 37,000 tokens, which is
+            # most of a context window spent on typography. On disk that is free and
+            # the page keeps its typography anywhere it is opened. Same renderer
+            # either way: a second one is how two versions start disagreeing about a
+            # number.
+            page = report.build(results, field=field, findings_by_url=findings_by_url,
+                                generated=time.strftime('%d %B %Y'),
+                                inline_fonts=bool(writing))
+            if writing:
+                try:
+                    destination.write_text(page, encoding='utf-8')
+                except OSError as e:
+                    raise ToolError(f'Could not write {destination}: {e}')
+                blocks.insert(0, {'type': 'text',
+                                  'text': f'Report written to {destination} '
+                                          f'({len(page.encode()) // 1024}KB, '
+                                          'self-contained, opens offline).'})
+            if want_html and not writing:
+                blocks.append({'type': 'text', 'text': page})
+        blocks.append({'type': 'text', 'text': json.dumps(
+            {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+             'results': results, 'field': field}, indent=2)})
+        return blocks
+
+    label = (f"{', '.join(urls)} [mobile], scores, field data and findings "
+             f'over {runs} distinct analyses')
+    return _run_or_defer('report', label,
+                         _job_estimate(len(urls), runs), work, progress)
 
 
 def tool_field_data(args, progress=None):
@@ -351,47 +632,114 @@ def tool_compare(args, progress=None):
                         'tell a real change from run-to-run noise.')
     replace = bool(args.get('save_baseline'))
     key = config.api_key()
-    done = [0]
 
-    def tick(distinct, _t, url, strat, fresh):
-        # Counts analyses, notifies on every call. See psi.measure.
-        if fresh:
-            done[0] += 1
-        if progress:
-            progress(done[0], len(urls) * runs,
-                     f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+    def work(report_progress):
+        done = [0]
 
-    texts, payload, compared = [], {}, False
-    for url in urls:
-        res = psi.measure(url, strategy, runs, key, progress=tick, with_findings=True)
-        res['recorded'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-        snap = compare.snapshot(res)
-        baseline = config.get_baseline(url, strategy)
+        def tick(distinct, _t, url, strat, fresh):
+            # Counts analyses, reports on every call. See psi.measure.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], len(urls) * runs,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
-        if baseline is None or replace:
-            config.save_baseline(url, strategy, snap)
-            payload[url] = {'baseline_recorded': snap}
-            texts.append(render.result(res))
-            texts.append(
-                f'  Baseline recorded for {url} [{strategy}]'
-                + ('.' if baseline is None else ', replacing the previous one.')
-                + '\n  Make your change, then run this again to see whether it '
-                  'moved anything.')
-            continue
+        texts, payload, compared = [], {}, False
+        for url in urls:
+            res = psi.measure(url, strategy, runs, key, progress=tick, with_findings=True)
+            res['recorded'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+            snap = compare.snapshot(res)
+            baseline = config.get_baseline(url, strategy)
 
-        compared = True
-        result = compare.results(baseline, snap)
-        payload[url] = {'comparison': result, 'baseline': baseline, 'now': snap}
-        texts.append(render.comparison(result, baseline.get('recorded')))
-        texts.append('  The baseline is unchanged, so the next run compares '
-                     'against the same starting point. Pass save_baseline to '
-                     'move it to this measurement.')
+            if baseline is None or replace:
+                config.save_baseline(url, strategy, snap)
+                payload[url] = {'baseline_recorded': snap}
+                texts.append(render.result(res))
+                texts.append(
+                    f'  Baseline recorded for {url} [{strategy}]'
+                    + ('.' if baseline is None else ', replacing the previous one.')
+                    + '\n  Make your change, then run this again to see whether it '
+                      'moved anything.')
+                continue
 
-    body = '\n\n'.join(texts)
-    if compared:
-        body += '\n\n' + render.COMPARE_NOTE
-    return [{'type': 'text', 'text': body},
-            {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+            compared = True
+            result = compare.results(baseline, snap)
+            payload[url] = {'comparison': result, 'baseline': baseline, 'now': snap}
+            texts.append(render.comparison(result, baseline.get('recorded')))
+            texts.append('  The baseline is unchanged, so the next run compares '
+                         'against the same starting point. Pass save_baseline to '
+                         'move it to this measurement.')
+
+        body = '\n\n'.join(texts)
+        if compared:
+            body += '\n\n' + render.COMPARE_NOTE
+        return [{'type': 'text', 'text': body},
+                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+    label = (f"{', '.join(urls)} [{strategy}], compared over "
+             f'{runs} distinct analyses')
+    return _run_or_defer('compare', label,
+                         _job_estimate(len(urls), runs), work, progress)
+
+
+def tool_check_status(args, progress=None):
+    """Collect a measurement that was too long to answer inside one call.
+
+    Returns instantly, always. Whatever the caller's timeout is, this fits
+    inside it, which is the whole point of the job it is collecting.
+    """
+    job_id = args.get('job_id')
+    if job_id is not None and not isinstance(job_id, str):
+        raise ToolError('job_id must be a string.')
+    job_id = (job_id or '').strip()
+    if not job_id:
+        # Losing the id should not lose the measurement.
+        job_id = _latest_job_id()
+        if not job_id:
+            raise ToolError(
+                'No measurement has been started on this server. Start one '
+                'with check_pagespeed, report, diagnose_page or compare.')
+
+    record = _job_read(job_id)
+    if record is None:
+        raise ToolError(
+            f'No job {job_id}. A finished job is kept for an hour and then '
+            'deleted, and a running one is lost if the server restarts. '
+            'Start the measurement again.')
+
+    status = record.get('status')
+    started = record.get('started') or time.time()
+    elapsed = int(round((record.get('finished') or time.time()) - started))
+
+    if status == 'done':
+        # The same blocks the inline path would have returned, so a caller
+        # cannot tell from the answer which route it took.
+        return record.get('content') or [
+            {'type': 'text', 'text': f'Job {job_id} finished with no output.'}]
+
+    if status == 'failed':
+        hint = record.get('hint') or ''
+        raise ToolError(
+            f'Job {job_id} failed after {elapsed}s: '
+            f"{record.get('error') or 'no reason recorded'}"
+            + (f'\n{hint}' if hint else ''))
+
+    quiet = time.time() - (record.get('updated') or started)
+    if quiet > JOB_STALE_SECONDS:
+        raise ToolError(
+            f'Job {job_id} stopped reporting {int(round(quiet))}s ago and is '
+            'lost. The usual cause is this server being restarted while the '
+            'measurement ran, which the client does once it has been idle. '
+            'Start it again, and keep polling while it runs.')
+
+    remaining = max(0, (record.get('estimate') or 0) - elapsed)
+    return [{'type': 'text', 'text':
+             f'Job {job_id}: running, {elapsed}s elapsed.\n'
+             f"  {record.get('label')}\n"
+             f"  {record.get('progress')}\n"
+             f"  {record.get('done')} of {record.get('total')} distinct "
+             'analyses collected so far.\n'
+             f'Roughly {_duration(remaining)} left. Call check_status again in '
+             'about 15 seconds.'}]
 
 
 def tool_diagnose(args, progress=None):
@@ -460,7 +808,12 @@ TOOLS = [
             'different analyses rather than the same one several times. That '
             'means runs=5 takes roughly 150 seconds and asking harder will NOT '
             'speed it up. Reports fewer analyses honestly if time runs out. '
-            'Returns a report and the same figures as JSON.',
+            'Anything that will not fit inside one tool call returns a JOB '
+            'ID instead and keeps working: collect it with check_status, '
+            'polling about every 15 seconds. Only runs=1 on a single URL '
+            'answers immediately, and runs=1 is the noisy single run you '
+            'should not be quoting. Returns a report and the same figures '
+            'as JSON.',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -486,8 +839,9 @@ TOOLS = [
             'a file the user can open or forward, because several of the largest '
             'findings are usually hosting or third-party decisions that the person '
             'running the check cannot fix alone. Set html false if they only want '
-            'the answer in conversation. SLOW, several minutes, and costs no extra '
-            'API calls over check_pagespeed. '
+            'the answer in conversation. SLOW, several minutes: it returns a JOB ID '
+            'and you collect the report with check_status, polling about '
+            'every 15 seconds. Costs no extra API calls over check_pagespeed. '
             'TO SAVE IT AS A FILE, pass directory. ASK THE USER WHERE THEY WANT IT '
             'FIRST, before calling, and ask BEFORE the run rather than after, '
             'because the measurement takes minutes and a bad folder is refused up '
@@ -533,8 +887,9 @@ TOOLS = [
             'metrics and every other performance audit weighs zero, so a big '
             'estimated saving on an unweighted diagnostic is not the first thing '
             'to fix. Savings do NOT add up, they overlap, so use the order '
-            'rather than the sum. SLOW, like check_pagespeed, and costs no extra '
-            'API calls.',
+            'rather than the sum. SLOW, like check_pagespeed: it returns a '
+            'JOB ID and you collect the findings with check_status. Costs '
+            'no extra API calls.',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -614,7 +969,8 @@ TOOLS = [
             'reports which findings stopped and started failing, and flags a '
             'Lighthouse version change, which moves scores without the page '
             'moving. Does NOT compare field data, which is a 28-day window and '
-            'cannot show a change made this week. SLOW, several minutes.',
+            'cannot show a change made this week. SLOW, several minutes: it returns '
+            'a JOB ID and you collect the verdict with check_status.',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -634,6 +990,32 @@ TOOLS = [
             'additionalProperties': False,
         },
         'handler': tool_compare,
+    },
+    {
+        'name': 'check_status',
+        'description':
+            'Collect a measurement that was handed back as a job. Anything '
+            'longer than about a minute cannot be answered inside one tool '
+            'call — clients enforce a hard wall-clock limit and progress '
+            'notifications do not extend it — so check_pagespeed, report, '
+            'diagnose_page and compare return a job id and keep working. Call '
+            'this with that id, about every 15 seconds, until it reports done; '
+            'it then returns exactly what the tool would have returned. '
+            'ALWAYS answers immediately. Omit job_id for the most recent job. '
+            'Do not start the same measurement again while one is running: it '
+            'will not arrive any sooner, because the wait is Google '
+            're-analysing the URL about once a minute.',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'job_id': {'type': 'string',
+                           'description': 'The id returned when the '
+                                          'measurement started. Omit for the '
+                                          'most recent one.'},
+            },
+            'additionalProperties': False,
+        },
+        'handler': tool_check_status,
     },
     {
         'name': 'diagnose',
@@ -657,8 +1039,12 @@ TOOLS = [
 # the one where the argument that makes it write was supplied. `compare` sat in
 # this set until 1.4.3, which contradicted its own description and told a
 # client it could run the tool without asking while it wrote state.
+#
+# check_status only reads job state. It prunes nothing and starts nothing;
+# expiry happens where a job is created, so a server nobody is using neither
+# writes nor deletes.
 _READ_ONLY = {'check_pagespeed', 'diagnose_page', 'field_data', 'explain_lcp',
-              'diagnose'}
+              'check_status', 'diagnose'}
 
 # `report` destroys nothing: config.resolve_destination refuses to overwrite
 # and picks a free name instead, so saving twice leaves two files rather than
@@ -676,6 +1062,7 @@ TITLES = {
     'field_data': 'Real-user field data',
     'explain_lcp': 'Explain LCP',
     'compare': 'Compare pages',
+    'check_status': 'Collect a running measurement',
     'diagnose': 'Check configuration',
 }
 
