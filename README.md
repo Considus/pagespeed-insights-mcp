@@ -9,7 +9,7 @@ dependency. Clone it and run it.
 
 [Docs](https://considus.com/pagespeed-insights-mcp/) · [Install](https://considus.com/pagespeed-insights-mcp/install/) · [FAQ](https://considus.com/pagespeed-insights-mcp/faq/)
 
-[![pagespeed-insights-mcp MCP server](https://glama.ai/mcp/servers/ConsidusOld/pagespeed-insights-mcp/badges/card.svg)](https://glama.ai/mcp/servers/ConsidusOld/pagespeed-insights-mcp)
+[![pagespeed-insights-mcp MCP server](https://glama.ai/mcp/servers/Considus/pagespeed-insights-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Considus/pagespeed-insights-mcp)
 
 ## Why another one
 
