@@ -310,7 +310,7 @@ CSS = """
   --ink:#0F0E0C; --dusk:#1C1A16; --starlight:#ECF1F5; --haze:#9AADB8;
   --slate:#4C5E6B; --cirrus:#EEF3F7;
   --stellar:#A0DCEE; --orbit:#1A9ABE; --anchor:#167890;
-  /* Brand error red (Catchlight --ruby), a light/dark pair. White on the light
+  /* Brand error and warning red (Catchlight --ruby), a light/dark pair. White on the light
      tone is 6.05:1; on the dark tone it is 3.29:1, so dark mode sets Ink text. */
   --ruby:#B82E2E; --on-ruby:#ffffff;
   --bg:var(--cirrus); --surface:#ffffff; --edge:rgba(0,0,0,0.08);
@@ -362,7 +362,7 @@ a{color:var(--accent)}
 .err{background:var(--ruby);color:var(--on-ruby);border-radius:11px;padding:16px 18px;margin:22px 0;
      font-size:0.9rem;line-height:1.7}
 .ok{border-left:3px solid var(--accent);padding-left:18px;margin:22px 0;color:var(--muted);font-size:0.9rem}
-.warn{border-left:3px solid var(--muted);padding-left:18px;margin:22px 0;color:var(--muted);font-size:0.9rem}
+.warn{border-left:3px solid var(--ruby);padding-left:18px;margin:22px 0;color:var(--muted);font-size:0.9rem}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
      background:var(--bg);border:1px solid var(--edge);border-radius:7px;padding:2px 6px}
 pre{overflow-x:auto;white-space:pre-wrap;background:var(--bg);border:1px solid var(--edge);
