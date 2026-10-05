@@ -6,6 +6,8 @@ Every task moves through four beats: isolate on a branch, build, prove with evid
 
 ## Isolate
 
+A fresh clone needs the committed hooks switched on once: `git config core.hooksPath hooks`. `hooks/pre-commit` refuses a commit on `main` and `hooks/commit-msg` refuses a Claude attribution footer.
+
 Branch from `origin/main` by name, never from wherever `HEAD` is sitting, and check nobody is already on the work:
 
 ```bash
