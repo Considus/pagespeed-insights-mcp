@@ -619,8 +619,9 @@ and ship it commercially without owing anything back, which is deliberate.
 
 Something broken or a number you don't believe,
 [open an issue](https://github.com/Considus/pagespeed-insights-mcp/issues).
-Anything exploitable goes through GitHub's private reporting instead, described
-in [SECURITY.md](SECURITY.md), rather than a public issue. For anything that
+Anything exploitable goes through GitHub's private reporting or to
+<security@considus.com> instead, as described in [SECURITY.md](SECURITY.md),
+rather than a public issue. For anything that
 fits neither, including press and licensing, it's <support@considus.com>, and
 the other ways to reach us are at
 [considus.com/support](https://considus.com/support/).

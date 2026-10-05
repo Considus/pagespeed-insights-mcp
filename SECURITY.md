@@ -4,7 +4,8 @@
 
 Please do not open a public issue for anything exploitable. Use GitHub's private
 reporting: the **Security** tab, then **Report a vulnerability**. That opens a
-private advisory visible only to you and the maintainer.
+private advisory visible only to you and the maintainer. If you would rather
+not use GitHub, email **security@considus.com**.
 
 Include what you found, how to reproduce it, and what it lets an attacker do.
 A proof of concept helps, a clear description is enough. You will get an
