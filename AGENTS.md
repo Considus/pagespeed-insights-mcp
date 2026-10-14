@@ -1,12 +1,6 @@
----
-summary: How a coding agent builds, tests and proposes a change to the PageSpeed Insights MCP server.
-type: agent-guide
-owner: claude
----
-
 # Agent notes
 
-For a coding agent working in this repo. People start with [`CONTRIBUTING.md`](CONTRIBUTING.md); read it before writing, because this file does not repeat it.
+For a coding agent working in this repo: the part an agent needs and a person already knows. People start with [`CONTRIBUTING.md`](CONTRIBUTING.md); read it before writing, because this file does not repeat it.
 
 ## Build
 
@@ -25,9 +19,9 @@ python3 -m unittest discover -s tests -v
 
 A PR needs all three green. Read the test **count**, not the word "passed": a collection error reports zero failures. No test needs an API key or a network connection; to try the real API, follow "Testing against the real APIs" in `CONTRIBUTING.md`.
 
-Capture the **before** while you are still reproducing the problem, and the **after** once the change works. Here that is usually a pair of command outputs.
+Capture the **before** while you are still reproducing the problem, which is when it is cheapest, and the **after** once the change works. Here that is usually a pair of command outputs.
 
-**Not checkable locally:** the Windows and Linux CI legs, the 3.9 leg unless 3.9 is installed, how a client renders the tool list, and whether the MCP Registry accepts a listing (`mcp-publisher validate` answers that before a release).
+**Not checkable locally:** the Windows and Linux CI legs, the 3.9 leg unless 3.9 is installed, how a client renders the tool list, and whether the MCP Registry accepts a listing (`mcp-publisher validate` is the only thing that answers that before a release is cut).
 
 ## Ship
 
