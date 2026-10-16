@@ -130,8 +130,8 @@ on describing the previous bundle, silently and for as long as you leave it.
    listing reports every version as active regardless, and will tell you the
    change failed when it did not.
 
-10. **Rebuild the website if this README changed.** considus.com's product pages
-    are generated from it, by `build-product-pages.py` in `Considus-Ops`.
+10. **Rebuild the website if this README changed.** considus.com's product page
+    is built from this README, so rebuild the site after changing it.
 
 ## Proposing a change
 
