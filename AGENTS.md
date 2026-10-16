@@ -25,7 +25,7 @@ Capture the **before** while you are still reproducing the problem, which is whe
 
 ## Ship
 
-1. Switch on the committed hooks once per clone: `git config core.hooksPath hooks`. `hooks/pre-commit` refuses a commit on `main`; `hooks/commit-msg` refuses a Claude attribution footer.
+1. Switch on the committed hooks once per clone: `git config core.hooksPath hooks`. `hooks/pre-commit` refuses a commit on `main`; `hooks/commit-msg` refuses a Claude attribution footer or an em or en dash.
 2. Check nobody is already on the work, then branch from `origin/main` by name, not from wherever `HEAD` is:
 
    ```bash
