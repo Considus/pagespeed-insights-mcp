@@ -130,6 +130,6 @@ def footer(extra=''):
     <a href="https://considus.com/privacy">Privacy</a>
     <a href="{REPO}">GitHub</a>
     <a href="https://buymeacoffee.com/considus">Buy me a coffee</a>
-    <a href="mailto:hello@considus.com">hello@considus.com</a>
+    <a href="mailto:support@considus.com">support@considus.com</a>
   </div>
 </footer>'''
