@@ -298,6 +298,7 @@ def _latest_job_id():
         if not isinstance(record, dict) or not _JOB_ID.fullmatch(str(record.get('id'))):
             continue
         if _expired(record):
+            _job_read(record['id'])     # deletes it, as a lookup by id would
             continue
         started = record.get('started') or 0
         if best_at is None or started > best_at:
