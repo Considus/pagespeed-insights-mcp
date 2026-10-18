@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1388,6 +1389,48 @@ class HtmlReport(unittest.TestCase):
         hostile = [dict(self.RESULT[0], url='https://x.test/<script>alert(1)</script>')]
         page = report.build(hostile, inline_fonts=False)
         self.assertNotIn('<script>alert', page)
+
+
+class TheServerTouchesOnlyWhatItMade(unittest.TestCase):
+    """The settings folder can be one the user picked and already uses. The
+    server must leave that folder's permissions alone and delete nothing in it
+    that it did not write itself."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self.picked = pathlib.Path(self._dir) / 'picked'
+        self.picked.mkdir()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(self.picked)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX modes')
+    def test_a_folder_the_user_already_had_keeps_its_mode(self):
+        self.picked.chmod(0o755)
+        config.config_dir()
+        self.assertEqual(stat.S_IMODE(self.picked.stat().st_mode), 0o755)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX modes')
+    def test_a_folder_the_server_creates_is_private(self):
+        fresh = self.picked / 'fresh'
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(fresh)
+        config.config_dir()
+        self.assertEqual(stat.S_IMODE(fresh.stat().st_mode), 0o700)
+
+    def test_pruning_deletes_only_job_files(self):
+        from pagespeed_insights import mcp
+        jobs = config.jobs_dir()
+        old = time.time() - 2 * mcp.JOB_TTL_SECONDS
+        for name in ('my-export.json', 'a1b2c3d4.json'):
+            (jobs / name).write_text('{}')
+            os.utime(jobs / name, (old, old))
+        mcp._job_prune()
+        self.assertEqual(sorted(p.name for p in jobs.iterdir()), ['my-export.json'])
 
 
 class Config(unittest.TestCase):
