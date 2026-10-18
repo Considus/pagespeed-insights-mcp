@@ -2080,6 +2080,103 @@ class Manifest(unittest.TestCase):
         self.assertIn('pagespeed_insights', build.INCLUDE_TREES)
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX ownership and symlinks')
+class TheConfigFolderMustBeYours(unittest.TestCase):
+    """The settings folder can be moved anywhere. If another account owns it,
+    or has planted links in it, everything written there by path follows those
+    links: job files land in someone else's chosen directory, and a planted
+    temporary-file link turns a settings save into a write elsewhere."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self.cfg = pathlib.Path(self._dir) / 'cfg'
+        self.cfg.mkdir()
+        self.victim = pathlib.Path(self._dir) / 'victim'
+        self.victim.mkdir()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(self.cfg)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_a_folder_owned_by_someone_else_is_refused(self):
+        someone_else = os.getuid() + 1
+        with mock.patch.object(config.os, 'getuid', lambda: someone_else):
+            with self.assertRaises(PermissionError):
+                config.config_dir()
+
+    def test_a_settings_folder_linked_to_your_own_is_accepted(self):
+        """A dotfiles setup links the whole settings folder somewhere else
+        the user owns. That is the user's choice, not a planted link."""
+        mine = pathlib.Path(self._dir) / 'dotfiles'
+        mine.mkdir()
+        link = pathlib.Path(self._dir) / 'linked'
+        os.symlink(mine, link)
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(link)
+        config.save({'api_key': 'dummy-key-123'})
+        self.assertEqual(config.api_key(), 'dummy-key-123')
+
+    def test_the_refusal_reaches_the_caller_as_itself(self):
+        """Not swallowed into an empty settings file, which would read as
+        "no API key" and send the user looking in the wrong place."""
+        someone_else = os.getuid() + 1
+        with mock.patch.object(config.os, 'getuid', lambda: someone_else):
+            for read in (config.load, config.load_baselines):
+                with self.subTest(read=read.__name__):
+                    with self.assertRaises(PermissionError):
+                        read()
+
+    def test_an_unwritable_place_still_reads_as_no_settings(self):
+        """Only the refusal surfaces. A folder that cannot be created, such as
+        one under a file, reads as no saved settings, as it always has, so a
+        key passed in PAGESPEED_API_KEY still works."""
+        blocker = pathlib.Path(self._dir) / 'a-file'
+        blocker.write_text('x')
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(blocker / 'cfg')
+        self.assertEqual(config.load(), {})
+        self.assertEqual(config.load_baselines(), {})
+
+    def test_a_linked_jobs_folder_is_refused(self):
+        os.symlink(self.victim, self.cfg / 'jobs')
+        with self.assertRaises(PermissionError):
+            config.jobs_dir()
+
+    def test_a_linked_reports_folder_is_refused(self):
+        os.symlink(self.victim, self.cfg / 'reports')
+        with self.assertRaises(PermissionError):
+            config.reports_dir()
+
+    def test_saving_settings_does_not_write_through_a_planted_link(self):
+        target = self.victim / 'rc'
+        target.write_text('export SAFE=1')
+        os.symlink(target, self.cfg / 'settings.tmp')
+        config.save({'api_key': 'dummy-key-123'})
+        self.assertEqual(target.read_text(), 'export SAFE=1')
+        self.assertEqual(config.api_key(), 'dummy-key-123')
+
+    def test_temp_files_left_by_a_hard_kill_are_pruned(self):
+        from pagespeed_insights import mcp
+        jobs = config.jobs_dir()
+        old = time.time() - 2 * mcp.JOB_TTL_SECONDS
+        for name in ('a1b2c3d4.json.k3j2h1.tmp', 'notes.tmp'):
+            (jobs / name).write_text('{}')
+            os.utime(jobs / name, (old, old))
+        mcp._job_prune()
+        self.assertEqual(sorted(p.name for p in jobs.iterdir()), ['notes.tmp'])
+
+    def test_a_job_file_does_not_write_through_a_planted_link(self):
+        from pagespeed_insights import mcp
+        target = self.victim / 'rc'
+        target.write_text('export SAFE=1')
+        (self.cfg / 'jobs').mkdir()
+        os.symlink(target, self.cfg / 'jobs' / 'a1b2c3d4.json.tmp')
+        mcp._job_write({'id': 'a1b2c3d4', 'status': 'running'})
+        self.assertEqual(target.read_text(), 'export SAFE=1')
+
+
 class BlankConfigCountsAsUnset(unittest.TestCase):
     """A bundle install declares the optional fields up front, so a field the
     user left alone can still arrive as an empty string. Blank has to mean

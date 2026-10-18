@@ -58,6 +58,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -196,6 +197,7 @@ def _inline_budget():
 # The ids _start_job hands out. check_status takes an id from the model, so
 # anything else is refused before it becomes part of a path.
 _JOB_ID = re.compile(r'[0-9a-f]{8}')
+_JOB_TEMP = re.compile(r'[0-9a-f]{8}\.json\..+\.tmp')
 
 
 def _job_path(job_id):
@@ -215,10 +217,19 @@ def _job_write(record):
     """
     try:
         path = _job_path(record['id'])
-        tmp = path.with_name(path.name + '.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(record, f)
-        os.replace(tmp, path)
+        # A fresh name created exclusively, so a link planted at a fixed
+        # <id>.json.tmp is never written through.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(record, f)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except (OSError, ValueError):
         pass
 
@@ -272,7 +283,14 @@ def _job_prune():
     """Drop what is past its keep-by. Called when a job starts, so a server
     nobody is using writes nothing and deletes nothing."""
     now = time.time()
-    for path in _job_files():
+    try:
+        # Temp files _job_write left behind when a hard kill landed between
+        # writing and renaming. Their names are unique, so nothing reuses them.
+        leftovers = [p for p in config.jobs_dir().glob('*.tmp')
+                     if _JOB_TEMP.fullmatch(p.name)]
+    except OSError:
+        leftovers = []
+    for path in _job_files() + leftovers:
         try:
             if now - path.stat().st_mtime > JOB_TTL_SECONDS:
                 path.unlink()
