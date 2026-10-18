@@ -649,16 +649,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         global _last_seen
-        _last_seen = time.time()
         if not self._authorised():
             self._reply(page('<h1>Not this link</h1><p>Run setup again to get a '
                              'fresh one.</p>'), 403)
             return
+        # Only the owner's requests count as activity. A request without the
+        # token must not keep the link alive past its idle timeout.
+        _last_seen = time.time()
         self._reply(form_page(existing=config.load()))
 
     def do_POST(self):
         global _last_seen
-        _last_seen = time.time()
         if not self._authorised():
             self._reply(page('<h1>Not this link</h1>'), 403)
             return
@@ -669,6 +670,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not hmac.compare_digest((fields.get('t') or [''])[0], TOKEN):
             self._reply(page('<h1>Not this link</h1>'), 403)
             return
+        _last_seen = time.time()
 
         existing = config.load()
         key = (fields.get('key') or [''])[0].strip() or (existing.get('api_key') or '')
