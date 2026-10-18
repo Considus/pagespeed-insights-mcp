@@ -2145,6 +2145,16 @@ class TheConfigFolderMustBeYours(unittest.TestCase):
         self.assertEqual(target.read_text(), 'export SAFE=1')
         self.assertEqual(config.api_key(), 'dummy-key-123')
 
+    def test_temp_files_left_by_a_hard_kill_are_pruned(self):
+        from pagespeed_insights import mcp
+        jobs = config.jobs_dir()
+        old = time.time() - 2 * mcp.JOB_TTL_SECONDS
+        for name in ('a1b2c3d4.json.k3j2h1.tmp', 'notes.tmp'):
+            (jobs / name).write_text('{}')
+            os.utime(jobs / name, (old, old))
+        mcp._job_prune()
+        self.assertEqual(sorted(p.name for p in jobs.iterdir()), ['notes.tmp'])
+
     def test_a_job_file_does_not_write_through_a_planted_link(self):
         from pagespeed_insights import mcp
         target = self.victim / 'rc'
