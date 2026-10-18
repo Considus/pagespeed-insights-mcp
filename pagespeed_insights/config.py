@@ -20,6 +20,7 @@ Anyone who would rather keep it in their own secret manager sets
 PAGESPEED_API_KEY in the environment instead, which always wins over the file.
 """
 import contextlib
+import errno
 import json
 import os
 import pathlib
@@ -302,8 +303,11 @@ def _baselines_locked():
                     try:
                         msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
                         break
-                    except OSError:
-                        continue
+                    except OSError as e:
+                        # Only "still locked" is worth waiting for. Anything
+                        # else would spin here for ever holding the thread lock.
+                        if e.errno not in (errno.EDEADLK, getattr(errno, 'EDEADLOCK', errno.EDEADLK)):
+                            raise
             else:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
