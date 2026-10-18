@@ -7,6 +7,7 @@ matters in a measurement tool.
 """
 import contextlib
 import html
+import io
 import json
 import os
 import pathlib
@@ -1572,6 +1573,51 @@ class VisibleCopy(unittest.TestCase):
                     text = visible(fragment)
                     self.assertNotIn('\u2014', text, f'{name}: {text[:80]}')
                     self.assertNotIn('\u2013', text, f'{name}: {text[:80]}')
+
+
+class SetupIdleTimerNeedsTheToken(unittest.TestCase):
+    """The setup link expires after IDLE_TIMEOUT quiet seconds. A request
+    without the token must not count as activity, or any local process could
+    keep the link alive for ever by knocking every few minutes."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+        self._last = setup._last_seen
+
+    def tearDown(self):
+        setup._last_seen = self._last
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def _request(self, raw):
+        handler = setup.Handler.__new__(setup.Handler)
+        handler.rfile = io.BytesIO(raw)
+        handler.wfile = io.BytesIO()
+        handler.client_address = ('127.0.0.1', 0)
+        handler.server = None
+        handler.request_version = 'HTTP/1.0'
+        handler.handle_one_request()
+        return handler.wfile.getvalue().split(b'\r\n', 1)[0]
+
+    def test_requests_without_the_token_leave_the_timer_alone(self):
+        for raw in (b'GET /?t=wrong HTTP/1.0\r\n\r\n',
+                    b'POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n',
+                    b'POST /?t=' + setup.TOKEN.encode() +
+                    b' HTTP/1.0\r\nContent-Length: 3\r\n\r\nt=x'):
+            with self.subTest(raw=raw[:20]):
+                setup._last_seen = 1000.0
+                self.assertIn(b'403', self._request(raw))
+                self.assertEqual(setup._last_seen, 1000.0)
+
+    def test_the_owners_request_still_counts(self):
+        setup._last_seen = 1000.0
+        status = self._request(b'GET /?t=' + setup.TOKEN.encode() + b' HTTP/1.0\r\n\r\n')
+        self.assertIn(b'200', status)
+        self.assertGreater(setup._last_seen, 1000.0)
 
 
 class SetupPageRenders(unittest.TestCase):
