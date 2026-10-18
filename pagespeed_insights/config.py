@@ -296,7 +296,14 @@ def _baselines_locked():
         try:
             if os.name == 'nt':
                 import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                # LK_LOCK gives up after about ten seconds where flock waits.
+                # Keep waiting, so a slow save delays this one, not loses it.
+                while True:
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError:
+                        continue
             else:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
