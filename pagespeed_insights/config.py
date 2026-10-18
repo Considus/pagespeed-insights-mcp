@@ -19,10 +19,14 @@ nuisance, not a breach, and it is fixed by deleting the key in the console.
 Anyone who would rather keep it in their own secret manager sets
 PAGESPEED_API_KEY in the environment instead, which always wins over the file.
 """
+import contextlib
+import errno
 import json
 import os
 import pathlib
 import sys
+import tempfile
+import threading
 
 APP = 'pagespeed-insights-mcp'
 
@@ -277,27 +281,68 @@ def get_baseline(url, strategy):
     return load_baselines().get(_baseline_key(url, strategy))
 
 
-def save_baseline(url, strategy, snapshot):
-    """Atomic, like save(), and for the same reason."""
-    data = load_baselines()
-    data[_baseline_key(url, strategy)] = snapshot
+# Several compare jobs run at once in one server, and several servers can share
+# one folder. Every change to baselines.json reads the whole file, edits one
+# entry and writes it back, so two changes that overlap would each write back
+# what they read and one would be lost. The thread lock covers this process and
+# the file lock covers the others.
+_BASELINES_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _baselines_locked():
+    with _BASELINES_LOCK:
+        fd = os.open(baselines_path().with_name('baselines.lock'),
+                     os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                # LK_LOCK gives up after about ten seconds where flock waits.
+                # Keep waiting, so a slow save delays this one, not loses it.
+                while True:
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError as e:
+                        # Only "still locked" is worth waiting for. Anything
+                        # else would spin here for ever holding the thread lock.
+                        if e.errno not in (errno.EDEADLK, getattr(errno, 'EDEADLOCK', errno.EDEADLK)):
+                            raise
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)        # closing the descriptor releases either lock
+
+
+def _write_baselines(data):
+    """Atomic, like save(), and for the same reason. The temporary file has a
+    name of its own, so two writers never share one."""
     path = baselines_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='baselines.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     return path
 
 
+def save_baseline(url, strategy, snapshot):
+    with _baselines_locked():
+        data = load_baselines()
+        data[_baseline_key(url, strategy)] = snapshot
+        return _write_baselines(data)
+
+
 def clear_baseline(url, strategy):
-    data = load_baselines()
-    if data.pop(_baseline_key(url, strategy), None) is None:
-        return False
-    path = baselines_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
-    return True
+    with _baselines_locked():
+        data = load_baselines()
+        if data.pop(_baseline_key(url, strategy), None) is None:
+            return False
+        _write_baselines(data)
+        return True
