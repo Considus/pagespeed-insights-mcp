@@ -70,11 +70,16 @@ def config_dir():
     """
     override = os.environ.get('PAGESPEED_CONFIG_DIR', '').strip()
     if override:
-        d = _private_dir(pathlib.Path(override).expanduser(), follow_link=True)
-        try:
-            d.chmod(0o700)
-        except OSError:
-            pass
+        d = pathlib.Path(override).expanduser()
+        # A folder the user already had keeps the permissions they gave it.
+        # Only one this server creates is made private.
+        created = not os.path.lexists(d)
+        d = _private_dir(d, follow_link=True)
+        if created:
+            try:
+                d.chmod(0o700)
+            except OSError:
+                pass
         return d
     if os.name == 'nt':
         base = os.environ.get('APPDATA') or (pathlib.Path.home() / 'AppData' / 'Roaming')

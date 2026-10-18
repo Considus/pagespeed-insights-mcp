@@ -273,8 +273,11 @@ def _job_read(job_id):
 
 
 def _job_files():
+    """This server's own job files: named by the ids it issues. The folder can
+    sit inside one the user picked, and pruning deletes what this returns."""
     try:
-        return sorted(config.jobs_dir().glob('*.json'))
+        return sorted(p for p in config.jobs_dir().glob('*.json')
+                      if _JOB_ID.fullmatch(p.stem))
     except OSError:
         return []
 
