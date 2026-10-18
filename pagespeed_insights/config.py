@@ -24,11 +24,30 @@ import errno
 import json
 import os
 import pathlib
+import stat
 import sys
 import tempfile
 import threading
 
 APP = 'pagespeed-insights-mcp'
+
+
+def _private_dir(d):
+    """Create d if needed and make sure it is a real folder this user owns.
+
+    Everything below it is opened by name, so a folder another account owns,
+    or a link planted where a folder should be, would send writes wherever
+    that account chose. Refused rather than repaired. Windows has no POSIX
+    owner to compare, and there the folder's inherited ACL decides.
+    """
+    d.mkdir(parents=True, exist_ok=True)
+    if os.name != 'nt':
+        st = os.lstat(d)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            raise PermissionError(
+                f'{d} is not a folder you own, so settings and results will not '
+                'be kept there. Point PAGESPEED_CONFIG_DIR at a folder of your own.')
+    return d
 
 
 def config_dir():
@@ -41,8 +60,7 @@ def config_dir():
     """
     override = os.environ.get('PAGESPEED_CONFIG_DIR', '').strip()
     if override:
-        d = pathlib.Path(override).expanduser()
-        d.mkdir(parents=True, exist_ok=True)
+        d = _private_dir(pathlib.Path(override).expanduser())
         try:
             d.chmod(0o700)
         except OSError:
@@ -54,8 +72,7 @@ def config_dir():
         base = pathlib.Path.home() / 'Library' / 'Application Support'
     else:
         base = os.environ.get('XDG_CONFIG_HOME') or (pathlib.Path.home() / '.config')
-    d = pathlib.Path(base) / APP
-    d.mkdir(parents=True, exist_ok=True)
+    d = _private_dir(pathlib.Path(base) / APP)
     try:
         d.chmod(0o700)
     except OSError:
@@ -92,11 +109,19 @@ def save(values):
     plainly in the README rather than papered over, and tested for what each
     platform actually guarantees rather than asserted uniformly."""
     path = settings_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(values, f, indent=2)
-    os.replace(tmp, path)
+    # A name of its own, created exclusively and 0600 by mkstemp, so nothing
+    # already at a fixed settings.tmp, a planted link included, is written to.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='settings.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(values, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -145,9 +170,7 @@ class BadDestination(ValueError):
 
 def reports_dir():
     """The default, beside the settings. Created on first use, like the rest."""
-    d = config_dir() / 'reports'
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _private_dir(config_dir() / 'reports')
 
 
 def jobs_dir():
@@ -160,9 +183,7 @@ def jobs_dir():
     arriving at the wrong process cannot see. A file per job is what makes the
     answer findable by whichever process is asked for it.
     """
-    d = config_dir() / 'jobs'
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _private_dir(config_dir() / 'jobs')
 
 
 def safe_filename(name, fallback):
