@@ -297,8 +297,9 @@ def _baseline_key(url, strategy):
 
 
 def load_baselines():
+    path = baselines_path()     # outside the try, as in load()
     try:
-        with open(baselines_path(), 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):

@@ -2124,8 +2124,10 @@ class TheConfigFolderMustBeYours(unittest.TestCase):
         "no API key" and send the user looking in the wrong place."""
         someone_else = os.getuid() + 1
         with mock.patch.object(config.os, 'getuid', lambda: someone_else):
-            with self.assertRaises(PermissionError):
-                config.load()
+            for read in (config.load, config.load_baselines):
+                with self.subTest(read=read.__name__):
+                    with self.assertRaises(PermissionError):
+                        read()
 
     def test_a_linked_jobs_folder_is_refused(self):
         os.symlink(self.victim, self.cfg / 'jobs')
