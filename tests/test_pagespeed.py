@@ -1688,6 +1688,43 @@ class CompareSaveBaselineIsABoolean(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class CheckStatusReadsOnlyItsOwnJobs(unittest.TestCase):
+    """check_status takes a job id from the model, which a measured page can
+    steer. It must open nothing but this server's own job files."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = os.path.join(self._dir, 'cfg')
+        self.outside = os.path.join(self._dir, 'outside')
+        os.makedirs(self.outside)
+        with open(os.path.join(self.outside, 'done.json'), 'w') as f:
+            json.dump({'status': 'done',
+                       'content': [{'type': 'text', 'text': 'OUTSIDE'}]}, f)
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_ids_that_name_a_path_are_not_jobs(self):
+        from pagespeed_insights import mcp
+        for job_id in ('../../outside/done', os.path.join(self.outside, 'done'),
+                       'DEADBEEF', 'deadbeef0', 'not-hex!'):
+            with self.subTest(job_id=job_id):
+                with self.assertRaises(mcp.ToolError) as caught:
+                    mcp.tool_check_status({'job_id': job_id})
+                self.assertIn('No job', str(caught.exception))
+
+    def test_a_real_job_id_still_answers(self):
+        from pagespeed_insights import mcp
+        mcp._job_write({'id': 'a1b2c3d4', 'status': 'done', 'started': time.time(),
+                        'content': [{'type': 'text', 'text': 'MINE'}]})
+        self.assertEqual(mcp.tool_check_status({'job_id': 'a1b2c3d4'}),
+                         [{'type': 'text', 'text': 'MINE'}])
+
+
 class SetupPageRenders(unittest.TestCase):
     """The whole page, on the real platform only. done_page reaches the config
     directory, and a faked Windows cannot build a WindowsPath here."""
