@@ -1725,6 +1725,51 @@ class CheckStatusReadsOnlyItsOwnJobs(unittest.TestCase):
                          [{'type': 'text', 'text': 'MINE'}])
 
 
+class SetupDropsSilentConnections(unittest.TestCase):
+    """The setup server handles one connection at a time. A local process that
+    connects and sends nothing must not hold that slot, or the owner's browser
+    never gets the page and the idle shutdown never returns."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_handler_has_a_read_timeout(self):
+        self.assertIsNotNone(setup.Handler.timeout)
+        self.assertLessEqual(setup.Handler.timeout, 30)
+
+    def test_a_silent_peer_does_not_block_the_owner(self):
+        import http.server
+        import socket
+
+        class Quick(setup.Handler):
+            # The real timeout, shortened to keep the test fast. None stays
+            # None, which is the bug: the owner's request then waits for ever.
+            timeout = (None if setup.Handler.timeout is None
+                       else min(setup.Handler.timeout, 0.5))
+
+        server = http.server.HTTPServer(('127.0.0.1', 0), Quick)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        silent = socket.create_connection(('127.0.0.1', port))
+        try:
+            owner = socket.create_connection(('127.0.0.1', port), timeout=5)
+            owner.sendall(b'GET /?t=' + setup.TOKEN.encode() + b' HTTP/1.0\r\n\r\n')
+            self.assertIn(b'200', owner.recv(64))
+            owner.close()
+        finally:
+            silent.close()
+            server.shutdown()
+            server.server_close()
+
+
 class SetupPageRenders(unittest.TestCase):
     """The whole page, on the real platform only. done_page reaches the config
     directory, and a faked Windows cannot build a WindowsPath here."""

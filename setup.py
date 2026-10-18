@@ -627,6 +627,9 @@ def done_page(urls, crux_state):
 # ---------------------------------------------------------------------------
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = 'pagespeed-setup'
+    # The server answers one connection at a time, so a peer that connects and
+    # says nothing would hold it, and the idle shutdown with it. Drop it.
+    timeout = 10
 
     def log_message(self, *_args):
         """Silence. The access log would record nothing useful and this process
