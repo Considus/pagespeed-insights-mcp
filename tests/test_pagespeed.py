@@ -1206,6 +1206,78 @@ class Rendering(unittest.TestCase):
         self.assertIn('too little data', text)
 
 
+class AReportNeverReplacesWhatAppearsMeanwhile(unittest.TestCase):
+    """The free name is chosen before a measurement that takes minutes, and the
+    report is written after it. Whatever appears at that name in between, a
+    file or a link, must be left alone, not truncated or written through."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+        self.out = pathlib.Path(self._dir) / 'out'
+        self.out.mkdir()
+        self.elsewhere = pathlib.Path(self._dir) / 'elsewhere.txt'
+        self.elsewhere.write_text('NOT A REPORT')
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_a_dangling_link_counts_as_taken(self):
+        os.symlink(self._dir + '/new.txt', self.out / 'r.html')
+        self.assertNotEqual(config.resolve_destination(str(self.out), 'r.html').name,
+                            'r.html')
+
+    def test_a_file_that_appears_after_resolving_is_kept(self):
+        path = config.resolve_destination(str(self.out), 'r.html')
+        path.write_text('USER FILE')
+        written = config.write_new(path, '<!doctype html>')
+        self.assertEqual(path.read_text(), 'USER FILE')
+        self.assertNotEqual(written, path)
+        self.assertEqual(written.read_text(), '<!doctype html>')
+
+    def test_a_link_that_appears_after_resolving_is_not_written_through(self):
+        path = config.resolve_destination(str(self.out), 'r.html')
+        os.symlink(self.elsewhere, path)
+        written = config.write_new(path, '<!doctype html>')
+        self.assertEqual(self.elsewhere.read_text(), 'NOT A REPORT')
+        self.assertTrue(os.path.islink(path))
+        self.assertFalse(os.path.islink(written))
+
+    def test_the_report_tool_writes_through_write_new(self):
+        from pagespeed_insights import mcp
+        planted = []
+        real_measure, real_record = mcp.psi.measure, mcp.crux.record
+        real_budget = os.environ.get('PAGESPEED_INLINE_BUDGET')
+
+        def measure(*_a, **_k):
+            # The user's own file lands at the chosen name mid-measurement.
+            target = self.out / 'r.html'
+            target.write_text('USER FILE')
+            planted.append(target)
+            return dict(HtmlReport.RESULT[0], strategy='mobile', findings=[])
+
+        def no_field(*_a, **_k):
+            raise CruxUnavailable('none', 'no_data')
+
+        mcp.psi.measure, mcp.crux.record = measure, no_field
+        os.environ['PAGESPEED_INLINE_BUDGET'] = '100000'
+        try:
+            mcp.tool_report({'urls': ['https://x.test/'], 'runs': 2,
+                             'directory': str(self.out), 'filename': 'r.html'})
+        finally:
+            mcp.psi.measure, mcp.crux.record = real_measure, real_record
+            if real_budget is None:
+                os.environ.pop('PAGESPEED_INLINE_BUDGET', None)
+            else:
+                os.environ['PAGESPEED_INLINE_BUDGET'] = real_budget
+        self.assertEqual(planted[0].read_text(), 'USER FILE')
+        self.assertEqual(len(list(self.out.glob('r*.html'))), 2)
+
+
 class HtmlReport(unittest.TestCase):
     """The page has two jobs and one of them is being small enough to send."""
 

@@ -558,11 +558,11 @@ def tool_report(args, progress=None):
                                 inline_fonts=bool(writing))
             if writing:
                 try:
-                    destination.write_text(page, encoding='utf-8')
+                    written = config.write_new(destination, page)
                 except OSError as e:
                     raise ToolError(f'Could not write {destination}: {e}')
                 blocks.insert(0, {'type': 'text',
-                                  'text': f'Report written to {destination} '
+                                  'text': f'Report written to {written} '
                                           f'({len(page.encode()) // 1024}KB, '
                                           'self-contained, opens offline).'})
             if want_html and not writing:
