@@ -56,6 +56,7 @@ first hazard above arriving through the fix for the second.
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -192,6 +193,11 @@ def _inline_budget():
     return value if value > 0 else INLINE_BUDGET
 
 
+# The ids _start_job hands out. check_status takes an id from the model, so
+# anything else is refused before it becomes part of a path.
+_JOB_ID = re.compile(r'[0-9a-f]{8}')
+
+
 def _job_path(job_id):
     return config.jobs_dir() / f'{job_id}.json'
 
@@ -218,15 +224,18 @@ def _job_write(record):
 
 
 def _job_read(job_id):
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        return None
     with _JOBS_LOCK:
         record = _JOBS.get(job_id)
     if record is not None:
         return dict(record)
     try:
         with open(_job_path(job_id), encoding='utf-8') as f:
-            return json.load(f)
+            record = json.load(f)
     except (OSError, ValueError):
         return None
+    return record if isinstance(record, dict) else None
 
 
 def _job_files():
@@ -266,6 +275,8 @@ def _latest_job_id():
             continue
     best, best_at = None, None
     for record in records:
+        if not isinstance(record, dict) or not _JOB_ID.fullmatch(str(record.get('id'))):
+            continue
         started = record.get('started') or 0
         if best_at is None or started > best_at:
             best, best_at = record.get('id'), started
