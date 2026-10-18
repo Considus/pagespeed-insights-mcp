@@ -224,11 +224,14 @@ def _job_write(record):
 
 
 def _expired(record, now=None):
-    """Finished more than JOB_TTL_SECONDS ago. A running job never expires."""
-    finished = record.get('finished')
-    if record.get('status') == 'running' or not isinstance(finished, (int, float)):
+    """Finished more than JOB_TTL_SECONDS ago, or "running" with no update for
+    that long: a live job publishes progress every few seconds, so one that
+    has been silent for an hour belonged to a server that died."""
+    key = 'updated' if record.get('status') == 'running' else 'finished'
+    at = record.get(key)
+    if not isinstance(at, (int, float)):
         return False
-    return (now or time.time()) - finished > JOB_TTL_SECONDS
+    return (now or time.time()) - at > JOB_TTL_SECONDS
 
 
 def _job_read(job_id):

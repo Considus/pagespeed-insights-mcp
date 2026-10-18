@@ -2137,6 +2137,14 @@ class FinishedJobsExpireOnTime(unittest.TestCase):
                 self.assertIn(says, str(caught.exception))
                 self.assertFalse(self.mcp._job_path(old).exists())
 
+    def test_a_running_job_left_by_a_dead_server_expires_too(self):
+        at = time.time() - 2 * 3600
+        self.mcp._job_write({'id': 'dead0001', 'status': 'running', 'started': at,
+                             'updated': at, 'finished': None, 'label': 'x'})
+        with self.assertRaises(self.mcp.ToolError):
+            self.mcp.tool_check_status({'job_id': 'dead0001'})
+        self.assertFalse(self.mcp._job_path('dead0001').exists())
+
     def test_a_job_inside_its_hour_still_answers(self):
         self._finished('a1b2c3d4', 600)
         self.assertEqual(self.mcp.tool_check_status({'job_id': 'a1b2c3d4'}),
