@@ -1655,6 +1655,39 @@ class SetupIdleTimerNeedsTheToken(unittest.TestCase):
         self.assertGreater(setup._last_seen, 1000.0)
 
 
+class CompareSaveBaselineIsABoolean(unittest.TestCase):
+    """save_baseline replaces a stored baseline that cannot be measured again.
+    Only a real true may do that. The string "false" is truthy in Python, so a
+    client that sends it must be refused, not obeyed backwards."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_non_boolean_values_are_refused_before_any_measurement(self):
+        from pagespeed_insights import mcp
+        calls = []
+        real = mcp.psi.measure
+        mcp.psi.measure = lambda *a, **k: calls.append(a)
+        try:
+            for value in ('false', 'False', 'no', '0', 'true', 0, 1, [], {}):
+                with self.subTest(value=value):
+                    with self.assertRaises(mcp.ToolError) as caught:
+                        mcp.tool_compare({'urls': ['https://example.test/'],
+                                          'save_baseline': value})
+                    self.assertIn('save_baseline', str(caught.exception))
+        finally:
+            mcp.psi.measure = real
+        self.assertEqual(calls, [])
+
+
 class SetupPageRenders(unittest.TestCase):
     """The whole page, on the real platform only. done_page reaches the config
     directory, and a faked Windows cannot build a WindowsPath here."""

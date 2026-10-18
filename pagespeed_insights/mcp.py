@@ -644,7 +644,13 @@ def tool_compare(args, progress=None):
         raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. One '
                         'analysis has no spread, so there would be nothing to '
                         'tell a real change from run-to-run noise.')
-    replace = bool(args.get('save_baseline'))
+    replace = args.get('save_baseline')
+    if replace is None:
+        replace = False
+    elif not isinstance(replace, bool):
+        # The string "false" is truthy, and a wrong guess here replaces a
+        # baseline that cannot be measured again.
+        raise ToolError('save_baseline must be true or false.')
     key = config.api_key()
 
     def work(report_progress):
