@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -561,6 +562,40 @@ class Findings(unittest.TestCase):
 
     def test_nothing_failing_says_so_rather_than_printing_an_empty_list(self):
         self.assertIn('Nothing failed', render.findings([], 'https://x.test/'))
+
+
+class CruxKeyStaysOutOfErrors(unittest.TestCase):
+    """The key is a credential. A malformed one must never come back quoted in
+    an error, which is tool output the model and the transcript keep."""
+
+    def test_key_goes_in_a_header_not_the_url(self):
+        seen = {}
+
+        class Done(Exception):
+            pass
+
+        def fake_urlopen(request, timeout=None):
+            seen['url'] = request.full_url
+            seen['key'] = request.get_header('X-goog-api-key')
+            raise Done()
+
+        with mock.patch.object(crux.urllib.request, 'urlopen', fake_urlopen):
+            with self.assertRaises(Done):
+                crux._post('queryRecord', {}, 'dummy-key-123')
+        self.assertNotIn('dummy-key-123', seen['url'])
+        self.assertEqual(seen['key'], 'dummy-key-123')
+
+    def test_malformed_key_is_refused_without_quoting_it(self):
+        for key in ('dummy-key-123 tail', 'dummy-key-123\ttail',
+                    'dummy-key-123\ntail', 'dummy-key-123\u200b'):
+            with self.subTest(key=repr(key)):
+                with self.assertRaises(CruxUnavailable) as caught:
+                    crux._query('queryRecord', {}, key, 'https://example.com/')
+                problem = caught.exception
+                text = ' '.join(str(x) for x in (problem, problem.message, problem.hint))
+                self.assertNotIn('dummy-key-123', text)
+                self.assertEqual(problem.reason, 'malformed_key')
+                self.assertIn('non-ASCII', problem.message)
 
 
 class CruxErrorClassification(unittest.TestCase):
