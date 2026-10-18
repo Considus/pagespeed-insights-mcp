@@ -207,15 +207,39 @@ def resolve_destination(directory=None, filename=None, default_name='report.html
     path = target / name
     # Never overwrite. Someone comparing a before against an after has two
     # reports they both want, and silently replacing the first is losing the
-    # thing they were about to compare against.
-    if path.exists():
-        stem, suffix = path.stem, path.suffix
-        for n in range(2, 1000):
-            candidate = target / f'{stem}-{n}{suffix}'
-            if not candidate.exists():
+    # thing they were about to compare against. lexists, so a link counts as
+    # taken whether or not it points anywhere.
+    if os.path.lexists(path):
+        for candidate in _numbered(path):
+            if not os.path.lexists(candidate):
                 return candidate
         raise BadDestination(f'Too many files named like {name} in {target}.')
     return path
+
+
+def _numbered(path):
+    for n in range(2, 1000):
+        yield path.with_name(f'{path.stem}-{n}{path.suffix}')
+
+
+def write_new(path, text):
+    """Write text to a file that did not exist a moment ago, and return where.
+
+    resolve_destination picks the name before a measurement that takes
+    minutes, so by the time the report is ready a file or a link may be at
+    that name. Creating exclusively, without following a link, leaves whatever
+    appeared alone and moves on to the next free numbered name.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+    for candidate in [path, *_numbered(path)]:
+        try:
+            fd = os.open(candidate, flags, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(text)
+        return candidate
+    raise OSError(f'Too many files named like {path.name} in {path.parent}.')
 
 
 # --------------------------------------------------------------------------
