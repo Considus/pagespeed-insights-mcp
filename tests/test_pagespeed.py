@@ -2129,6 +2129,16 @@ class TheConfigFolderMustBeYours(unittest.TestCase):
                     with self.assertRaises(PermissionError):
                         read()
 
+    def test_an_unwritable_place_still_reads_as_no_settings(self):
+        """Only the refusal surfaces. A folder that cannot be created, such as
+        one under a file, reads as no saved settings, as it always has, so a
+        key passed in PAGESPEED_API_KEY still works."""
+        blocker = pathlib.Path(self._dir) / 'a-file'
+        blocker.write_text('x')
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(blocker / 'cfg')
+        self.assertEqual(config.load(), {})
+        self.assertEqual(config.load_baselines(), {})
+
     def test_a_linked_jobs_folder_is_refused(self):
         os.symlink(self.victim, self.cfg / 'jobs')
         with self.assertRaises(PermissionError):

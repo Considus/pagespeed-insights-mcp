@@ -32,6 +32,12 @@ import threading
 APP = 'pagespeed-insights-mcp'
 
 
+class NotYourFolder(PermissionError):
+    """The settings folder, or one under it, is not a real folder this user
+    owns. Kept apart from other OSErrors so readers can let only this one
+    through: a read-only home still reads as no saved settings, as before."""
+
+
 def _private_dir(d, follow_link=False):
     """Create d if needed and make sure it is a real folder this user owns.
 
@@ -48,7 +54,7 @@ def _private_dir(d, follow_link=False):
     if os.name != 'nt':
         st = os.stat(d) if follow_link else os.lstat(d)
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
-            raise PermissionError(
+            raise NotYourFolder(
                 f'{d} is not a folder you own, so settings and results will not '
                 'be kept there. Point PAGESPEED_CONFIG_DIR at a folder of your own.')
     return d
@@ -89,13 +95,14 @@ def settings_path():
 
 
 def load():
-    # Outside the try: a settings folder refused as not the user's own must
-    # say so, not read as an empty file and "no API key".
-    path = settings_path()
+    # A settings folder refused as not the user's own must say so, not read as
+    # an empty file and "no API key". Any other failure still reads as empty.
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(settings_path(), 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
+    except NotYourFolder:
+        raise
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -297,11 +304,12 @@ def _baseline_key(url, strategy):
 
 
 def load_baselines():
-    path = baselines_path()     # outside the try, as in load()
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(baselines_path(), 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
+    except NotYourFolder:       # as in load()
+        raise
     except (OSError, json.JSONDecodeError):
         return {}
 
