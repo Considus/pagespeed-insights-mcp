@@ -2108,6 +2108,25 @@ class TheConfigFolderMustBeYours(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 config.config_dir()
 
+    def test_a_settings_folder_linked_to_your_own_is_accepted(self):
+        """A dotfiles setup links the whole settings folder somewhere else
+        the user owns. That is the user's choice, not a planted link."""
+        mine = pathlib.Path(self._dir) / 'dotfiles'
+        mine.mkdir()
+        link = pathlib.Path(self._dir) / 'linked'
+        os.symlink(mine, link)
+        os.environ['PAGESPEED_CONFIG_DIR'] = str(link)
+        config.save({'api_key': 'dummy-key-123'})
+        self.assertEqual(config.api_key(), 'dummy-key-123')
+
+    def test_the_refusal_reaches_the_caller_as_itself(self):
+        """Not swallowed into an empty settings file, which would read as
+        "no API key" and send the user looking in the wrong place."""
+        someone_else = os.getuid() + 1
+        with mock.patch.object(config.os, 'getuid', lambda: someone_else):
+            with self.assertRaises(PermissionError):
+                config.load()
+
     def test_a_linked_jobs_folder_is_refused(self):
         os.symlink(self.victim, self.cfg / 'jobs')
         with self.assertRaises(PermissionError):

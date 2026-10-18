@@ -32,17 +32,21 @@ import threading
 APP = 'pagespeed-insights-mcp'
 
 
-def _private_dir(d):
+def _private_dir(d, follow_link=False):
     """Create d if needed and make sure it is a real folder this user owns.
 
     Everything below it is opened by name, so a folder another account owns,
     or a link planted where a folder should be, would send writes wherever
     that account chose. Refused rather than repaired. Windows has no POSIX
     owner to compare, and there the folder's inherited ACL decides.
+
+    follow_link is for the settings folder itself, which the user may have
+    linked to a folder of their own on purpose. Its subfolders are made by
+    this server, so a link there is never ours and is refused.
     """
     d.mkdir(parents=True, exist_ok=True)
     if os.name != 'nt':
-        st = os.lstat(d)
+        st = os.stat(d) if follow_link else os.lstat(d)
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
             raise PermissionError(
                 f'{d} is not a folder you own, so settings and results will not '
@@ -60,7 +64,7 @@ def config_dir():
     """
     override = os.environ.get('PAGESPEED_CONFIG_DIR', '').strip()
     if override:
-        d = _private_dir(pathlib.Path(override).expanduser())
+        d = _private_dir(pathlib.Path(override).expanduser(), follow_link=True)
         try:
             d.chmod(0o700)
         except OSError:
@@ -72,7 +76,7 @@ def config_dir():
         base = pathlib.Path.home() / 'Library' / 'Application Support'
     else:
         base = os.environ.get('XDG_CONFIG_HOME') or (pathlib.Path.home() / '.config')
-    d = _private_dir(pathlib.Path(base) / APP)
+    d = _private_dir(pathlib.Path(base) / APP, follow_link=True)
     try:
         d.chmod(0o700)
     except OSError:
@@ -85,8 +89,11 @@ def settings_path():
 
 
 def load():
+    # Outside the try: a settings folder refused as not the user's own must
+    # say so, not read as an empty file and "no API key".
+    path = settings_path()
     try:
-        with open(settings_path(), 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
