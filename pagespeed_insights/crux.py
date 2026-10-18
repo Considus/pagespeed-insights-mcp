@@ -140,8 +140,9 @@ def _query(endpoint, body, key, target, propagation_retries=2):
             'API does not. Run setup to add a key.')
     if not _well_formed(key):
         raise CruxUnavailable(
-            'The configured API key contains spaces or control characters.',
-            'restricted',
+            'The configured API key contains spaces, control characters or '
+            'non-ASCII characters, so it cannot be a Google API key.',
+            'malformed_key',
             'Run setup again, or fix PAGESPEED_API_KEY, so it holds the key alone.')
 
     delay = 8

@@ -587,13 +587,15 @@ class CruxKeyStaysOutOfErrors(unittest.TestCase):
 
     def test_malformed_key_is_refused_without_quoting_it(self):
         for key in ('dummy-key-123 tail', 'dummy-key-123\ttail',
-                    'dummy-key-123\ntail'):
+                    'dummy-key-123\ntail', 'dummy-key-123\u200b'):
             with self.subTest(key=repr(key)):
                 with self.assertRaises(CruxUnavailable) as caught:
                     crux._query('queryRecord', {}, key, 'https://example.com/')
                 problem = caught.exception
                 text = ' '.join(str(x) for x in (problem, problem.message, problem.hint))
                 self.assertNotIn('dummy-key-123', text)
+                self.assertEqual(problem.reason, 'malformed_key')
+                self.assertIn('non-ASCII', problem.message)
 
 
 class CruxErrorClassification(unittest.TestCase):

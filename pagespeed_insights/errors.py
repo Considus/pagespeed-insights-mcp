@@ -53,6 +53,8 @@ class CruxUnavailable(PageSpeedError):
                        anonymity threshold. Not an error. Expected for any small
                        or pre-launch site, and must never be reported as one.
         'restricted'   the key exists but is not permitted to call CrUX.
+        'malformed_key' the configured key holds spaces, control or non-ASCII
+                       characters, usually from a bad paste. Nothing is sent.
         'not_enabled'  the Chrome UX Report API is off for the project — OR the
                        enablement has not propagated yet, which is
                        indistinguishable from the outside. See crux.py.
