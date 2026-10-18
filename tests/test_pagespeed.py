@@ -1005,6 +1005,59 @@ class Baselines(unittest.TestCase):
         self.assertFalse(config.clear_baseline('https://x.test/', 'mobile'))
 
 
+class ConcurrentBaselineSaves(unittest.TestCase):
+    """compare runs as a background job, up to four at once, and several
+    servers can share one config folder. Two saves that overlap must both
+    land: a lost baseline is a before-measurement that cannot be retaken."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self._dir
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+
+    def test_overlapping_saves_keep_both_baselines(self):
+        real_load = config.load_baselines
+        both_loaded = threading.Barrier(2)
+
+        def load_together():
+            data = real_load()
+            try:
+                # Without a lock both threads read the file before either
+                # writes it. With one, the second never gets here in time.
+                both_loaded.wait(timeout=1)
+            except threading.BrokenBarrierError:
+                pass
+            return data
+
+        errors = []
+
+        def save(url):
+            try:
+                config.save_baseline(url, 'mobile', compare.snapshot(measurement()))
+            except Exception as e:      # noqa: BLE001 - the test reports it
+                errors.append(e)
+
+        config.load_baselines = load_together
+        try:
+            threads = [threading.Thread(target=save, args=(u,))
+                       for u in ('https://a.test/', 'https://b.test/')]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+        finally:
+            config.load_baselines = real_load
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(config.load_baselines()),
+                         ['mobile|https://a.test/', 'mobile|https://b.test/'])
+
+
 class TheSkillIsInstallable(unittest.TestCase):
     """Two things this got wrong, both of which looked fine.
 
