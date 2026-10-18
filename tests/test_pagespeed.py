@@ -2099,6 +2099,58 @@ class BlankConfigCountsAsUnset(unittest.TestCase):
                 os.environ.pop('PAGESPEED_CONFIG_DIR', None)
 
 
+class FinishedJobsExpireOnTime(unittest.TestCase):
+    """The README and the privacy notes promise a finished job is deleted an
+    hour after it finishes. Pruning ran only when a new job started, so on a
+    quiet server the results, URLs included, stayed readable for days."""
+
+    def setUp(self):
+        from pagespeed_insights import mcp
+        self.mcp = mcp
+        self.tmp = tempfile.TemporaryDirectory()
+        self._saved = os.environ.get('PAGESPEED_CONFIG_DIR')
+        os.environ['PAGESPEED_CONFIG_DIR'] = self.tmp.name
+        mcp._JOBS.clear()
+
+    def tearDown(self):
+        self.mcp._JOBS.clear()
+        if self._saved is None:
+            os.environ.pop('PAGESPEED_CONFIG_DIR', None)
+        else:
+            os.environ['PAGESPEED_CONFIG_DIR'] = self._saved
+        self.tmp.cleanup()
+
+    def _finished(self, job_id, ago):
+        at = time.time() - ago
+        self.mcp._job_write({'id': job_id, 'status': 'done', 'started': at - 60,
+                             'updated': at, 'finished': at,
+                             'content': [{'type': 'text', 'text': job_id}]})
+
+    def test_a_job_past_its_hour_is_gone_by_id_and_by_default(self):
+        old = '01d0b000'
+        for args, says in (({}, 'more than an hour ago'),
+                           ({'job_id': old}, 'kept for an hour')):
+            with self.subTest(args=args):
+                self._finished(old, 2 * 3600)
+                with self.assertRaises(self.mcp.ToolError) as caught:
+                    self.mcp.tool_check_status(args)
+                self.assertIn(says, str(caught.exception))
+                self.assertFalse(self.mcp._job_path(old).exists())
+
+    def test_a_running_job_left_by_a_dead_server_expires_too(self):
+        at = time.time() - 2 * 3600
+        self.mcp._job_write({'id': 'dead0001', 'status': 'running', 'started': at,
+                             'updated': at, 'finished': None, 'label': 'x'})
+        with self.assertRaises(self.mcp.ToolError):
+            self.mcp.tool_check_status({'job_id': 'dead0001'})
+        self.assertFalse(self.mcp._job_path('dead0001').exists())
+
+    def test_a_job_inside_its_hour_still_answers(self):
+        self._finished('a1b2c3d4', 600)
+        self.assertEqual(self.mcp.tool_check_status({'job_id': 'a1b2c3d4'}),
+                         [{'type': 'text', 'text': 'a1b2c3d4'}])
+
+
 class JobsOutliveTheCall(unittest.TestCase):
     """A measurement takes minutes and the client gives up in sixty seconds.
 

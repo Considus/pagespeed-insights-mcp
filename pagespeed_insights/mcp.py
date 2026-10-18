@@ -223,19 +223,42 @@ def _job_write(record):
         pass
 
 
+def _expired(record, now=None):
+    """Finished more than JOB_TTL_SECONDS ago, or "running" with no update for
+    that long: a live job publishes progress every few seconds, so one that
+    has been silent for an hour belonged to a server that died."""
+    key = 'updated' if record.get('status') == 'running' else 'finished'
+    at = record.get(key)
+    if not isinstance(at, (int, float)):
+        return False
+    return (now or time.time()) - at > JOB_TTL_SECONDS
+
+
 def _job_read(job_id):
+    """A job past its keep-by is deleted here as well as in _job_prune, which
+    runs only when a job starts: a quiet server would otherwise keep results
+    readable long after the hour it promises."""
     if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
         return None
     with _JOBS_LOCK:
         record = _JOBS.get(job_id)
-    if record is not None:
-        return dict(record)
-    try:
-        with open(_job_path(job_id), encoding='utf-8') as f:
-            record = json.load(f)
-    except (OSError, ValueError):
+    if record is None:
+        try:
+            with open(_job_path(job_id), encoding='utf-8') as f:
+                record = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict):
+            return None
+    if _expired(record):
+        with _JOBS_LOCK:
+            _JOBS.pop(job_id, None)
+        try:
+            _job_path(job_id).unlink()
+        except OSError:
+            pass
         return None
-    return record if isinstance(record, dict) else None
+    return dict(record)
 
 
 def _job_files():
@@ -276,6 +299,9 @@ def _latest_job_id():
     best, best_at = None, None
     for record in records:
         if not isinstance(record, dict) or not _JOB_ID.fullmatch(str(record.get('id'))):
+            continue
+        if _expired(record):
+            _job_read(record['id'])     # deletes it, as a lookup by id would
             continue
         started = record.get('started') or 0
         if best_at is None or started > best_at:
@@ -727,8 +753,10 @@ def tool_check_status(args, progress=None):
         job_id = _latest_job_id()
         if not job_id:
             raise ToolError(
-                'No measurement has been started on this server. Start one '
-                'with check_pagespeed, report, diagnose_page or compare.')
+                'No measurement on this server to report on: none has been '
+                'started, or the last one finished more than an hour ago and '
+                'was deleted. Start one with check_pagespeed, report, '
+                'diagnose_page or compare.')
 
     record = _job_read(job_id)
     if record is None:
