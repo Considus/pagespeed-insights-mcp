@@ -2129,10 +2129,12 @@ class FinishedJobsExpireOnTime(unittest.TestCase):
     def test_a_job_past_its_hour_is_gone_by_id_and_by_default(self):
         old = '01d0b000'
         self._finished(old, 2 * 3600)
-        for args in ({'job_id': old}, {}):
+        for args, says in (({'job_id': old}, 'kept for an hour'),
+                           ({}, 'more than an hour ago')):
             with self.subTest(args=args):
-                with self.assertRaises(self.mcp.ToolError):
+                with self.assertRaises(self.mcp.ToolError) as caught:
                     self.mcp.tool_check_status(args)
+                self.assertIn(says, str(caught.exception))
         self.assertFalse(self.mcp._job_path(old).exists())
 
     def test_a_job_inside_its_hour_still_answers(self):

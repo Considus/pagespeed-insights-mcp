@@ -749,8 +749,10 @@ def tool_check_status(args, progress=None):
         job_id = _latest_job_id()
         if not job_id:
             raise ToolError(
-                'No measurement has been started on this server. Start one '
-                'with check_pagespeed, report, diagnose_page or compare.')
+                'No measurement on this server to report on: none has been '
+                'started, or the last one finished more than an hour ago and '
+                'was deleted. Start one with check_pagespeed, report, '
+                'diagnose_page or compare.')
 
     record = _job_read(job_id)
     if record is None:
