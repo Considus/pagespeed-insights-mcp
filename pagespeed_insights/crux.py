@@ -70,12 +70,20 @@ SHARES = [
 
 
 def _post(endpoint, body, key, timeout=90):
+    # The key travels in a header, never the URL: urllib quotes a malformed URL
+    # in its error, and that error would reach the tool's output.
     request = urllib.request.Request(
-        f'{API}:{endpoint}?key={key}',
+        f'{API}:{endpoint}',
         data=json.dumps(body).encode(),
-        headers={'Content-Type': 'application/json'})
+        headers={'Content-Type': 'application/json', 'X-Goog-Api-Key': key})
     with urllib.request.urlopen(request, timeout=timeout) as r:
         return json.load(r)
+
+
+def _well_formed(key):
+    """A Google API key is printable ASCII with no spaces. Anything else came
+    from a bad paste, and sending it would only produce an error that quotes it."""
+    return key.isascii() and key.isprintable() and not any(c.isspace() for c in key)
 
 
 def _classify(code, payload, target):
@@ -130,6 +138,12 @@ def _query(endpoint, body, key, target, propagation_retries=2):
             'Field data needs an API key.', 'restricted',
             'PageSpeed Insights answers without one, but the Chrome UX Report '
             'API does not. Run setup to add a key.')
+    if not _well_formed(key):
+        raise CruxUnavailable(
+            'The configured API key contains spaces, control characters or '
+            'non-ASCII characters, so it cannot be a Google API key.',
+            'malformed_key',
+            'Run setup again, or fix PAGESPEED_API_KEY, so it holds the key alone.')
 
     delay = 8
     for attempt in range(propagation_retries + 1):

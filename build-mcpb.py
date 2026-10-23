@@ -95,6 +95,8 @@ def check(fix=False):
 
 def _prune(root):
     for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        for d in [d for d in dirnames if d in _PRUNE]:
+            shutil.rmtree(os.path.join(dirpath, d))
         dirnames[:] = [d for d in dirnames if d not in _PRUNE]
         for name in filenames:
             if name.endswith(_PRUNE) or name in _PRUNE:

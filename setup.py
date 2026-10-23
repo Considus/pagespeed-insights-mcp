@@ -419,7 +419,7 @@ def page(body, title='Considus · PageSpeed Insights setup'):
     <a href="https://considus.com/privacy">Privacy</a>
     <a href="https://github.com/Considus/pagespeed-insights-mcp">GitHub</a>
     <a href="https://buymeacoffee.com/considus">Buy me a coffee</a>
-    <a href="mailto:hello@considus.com">hello@considus.com</a>
+    <a href="mailto:support@considus.com">support@considus.com</a>
   </div>
 </footer>
 </div></body></html>""" % (html.escape(title), font_css(), CSS,
@@ -627,6 +627,9 @@ def done_page(urls, crux_state):
 # ---------------------------------------------------------------------------
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = 'pagespeed-setup'
+    # The server answers one connection at a time, so a peer that connects and
+    # says nothing would hold it, and the idle shutdown with it. Drop it.
+    timeout = 10
 
     def log_message(self, *_args):
         """Silence. The access log would record nothing useful and this process
@@ -649,16 +652,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         global _last_seen
-        _last_seen = time.time()
         if not self._authorised():
             self._reply(page('<h1>Not this link</h1><p>Run setup again to get a '
                              'fresh one.</p>'), 403)
             return
+        # Only the owner's requests count as activity. A request without the
+        # token must not keep the link alive past its idle timeout.
+        _last_seen = time.time()
         self._reply(form_page(existing=config.load()))
 
     def do_POST(self):
         global _last_seen
-        _last_seen = time.time()
         if not self._authorised():
             self._reply(page('<h1>Not this link</h1>'), 403)
             return
@@ -669,6 +673,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not hmac.compare_digest((fields.get('t') or [''])[0], TOKEN):
             self._reply(page('<h1>Not this link</h1>'), 403)
             return
+        _last_seen = time.time()
 
         existing = config.load()
         key = (fields.get('key') or [''])[0].strip() or (existing.get('api_key') or '')

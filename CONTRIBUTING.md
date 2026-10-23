@@ -65,7 +65,7 @@ The bundle carries `assets/` as well as the package. `brand.py` resolves that fo
 
 `setup.py` is not in the bundle, because a bundle is configured through the manifest's `user_config`. Unlike the Proton server, setup here writes to the platform config directory rather than beside the server, so a key saved by a cloned copy is picked up by a bundle install too. They share one settings file.
 
-Every tool needs a title and the right `readOnlyHint` or `destructiveHint`, and a directory submission is rejected without them. `report` is the one that is not read-only, because it writes a file when given a directory or a filename. Tests cover this.
+Every tool needs a title and the right `readOnlyHint` or `destructiveHint`, and a directory submission is rejected without them. `analyse_page` is not read-only, because it writes a file when given a directory or a filename, and nor is `compare_to_baseline`, which records a baseline. Tests cover this.
 
 ## Releasing
 

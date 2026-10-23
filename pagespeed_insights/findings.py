@@ -156,8 +156,8 @@ def collect(records, lhr, limit=None):
     for aid in always:
         audit = audits.get(aid) or {}
         category, group = where.get(aid, ('other', None))
-        # The five metric audits ARE the score. They are reported by
-        # check_pagespeed with their own median and spread, and listing
+        # The five metric audits ARE the score. They are reported among
+        # analyse_page's scores with their own median and spread, and listing
         # "First Contentful Paint" as a thing to fix says nothing about how.
         if group == 'metrics':
             continue

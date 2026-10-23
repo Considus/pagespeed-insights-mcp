@@ -19,12 +19,45 @@ nuisance, not a breach, and it is fixed by deleting the key in the console.
 Anyone who would rather keep it in their own secret manager sets
 PAGESPEED_API_KEY in the environment instead, which always wins over the file.
 """
+import contextlib
+import errno
 import json
 import os
 import pathlib
+import stat
 import sys
+import tempfile
+import threading
 
 APP = 'pagespeed-insights-mcp'
+
+
+class NotYourFolder(PermissionError):
+    """The settings folder, or one under it, is not a real folder this user
+    owns. Kept apart from other OSErrors so readers can let only this one
+    through: a read-only home still reads as no saved settings, as before."""
+
+
+def _private_dir(d, follow_link=False):
+    """Create d if needed and make sure it is a real folder this user owns.
+
+    Everything below it is opened by name, so a folder another account owns,
+    or a link planted where a folder should be, would send writes wherever
+    that account chose. Refused rather than repaired. Windows has no POSIX
+    owner to compare, and there the folder's inherited ACL decides.
+
+    follow_link is for the settings folder itself, which the user may have
+    linked to a folder of their own on purpose. Its subfolders are made by
+    this server, so a link there is never ours and is refused.
+    """
+    d.mkdir(parents=True, exist_ok=True)
+    if os.name != 'nt':
+        st = os.stat(d) if follow_link else os.lstat(d)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            raise NotYourFolder(
+                f'{d} is not a folder you own, so settings and results will not '
+                'be kept there. Point PAGESPEED_CONFIG_DIR at a folder of your own.')
+    return d
 
 
 def config_dir():
@@ -38,11 +71,15 @@ def config_dir():
     override = os.environ.get('PAGESPEED_CONFIG_DIR', '').strip()
     if override:
         d = pathlib.Path(override).expanduser()
-        d.mkdir(parents=True, exist_ok=True)
-        try:
-            d.chmod(0o700)
-        except OSError:
-            pass
+        # A folder the user already had keeps the permissions they gave it.
+        # Only one this server creates is made private.
+        created = not os.path.lexists(d)
+        d = _private_dir(d, follow_link=True)
+        if created:
+            try:
+                d.chmod(0o700)
+            except OSError:
+                pass
         return d
     if os.name == 'nt':
         base = os.environ.get('APPDATA') or (pathlib.Path.home() / 'AppData' / 'Roaming')
@@ -50,8 +87,7 @@ def config_dir():
         base = pathlib.Path.home() / 'Library' / 'Application Support'
     else:
         base = os.environ.get('XDG_CONFIG_HOME') or (pathlib.Path.home() / '.config')
-    d = pathlib.Path(base) / APP
-    d.mkdir(parents=True, exist_ok=True)
+    d = _private_dir(pathlib.Path(base) / APP, follow_link=True)
     try:
         d.chmod(0o700)
     except OSError:
@@ -64,10 +100,14 @@ def settings_path():
 
 
 def load():
+    # A settings folder refused as not the user's own must say so, not read as
+    # an empty file and "no API key". Any other failure still reads as empty.
     try:
         with open(settings_path(), 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
+    except NotYourFolder:
+        raise
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -88,11 +128,19 @@ def save(values):
     plainly in the README rather than papered over, and tested for what each
     platform actually guarantees rather than asserted uniformly."""
     path = settings_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(values, f, indent=2)
-    os.replace(tmp, path)
+    # A name of its own, created exclusively and 0600 by mkstemp, so nothing
+    # already at a fixed settings.tmp, a planted link included, is written to.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='settings.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(values, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -141,9 +189,7 @@ class BadDestination(ValueError):
 
 def reports_dir():
     """The default, beside the settings. Created on first use, like the rest."""
-    d = config_dir() / 'reports'
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _private_dir(config_dir() / 'reports')
 
 
 def jobs_dir():
@@ -156,9 +202,7 @@ def jobs_dir():
     arriving at the wrong process cannot see. A file per job is what makes the
     answer findable by whichever process is asked for it.
     """
-    d = config_dir() / 'jobs'
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _private_dir(config_dir() / 'jobs')
 
 
 def safe_filename(name, fallback):
@@ -207,15 +251,39 @@ def resolve_destination(directory=None, filename=None, default_name='report.html
     path = target / name
     # Never overwrite. Someone comparing a before against an after has two
     # reports they both want, and silently replacing the first is losing the
-    # thing they were about to compare against.
-    if path.exists():
-        stem, suffix = path.stem, path.suffix
-        for n in range(2, 1000):
-            candidate = target / f'{stem}-{n}{suffix}'
-            if not candidate.exists():
+    # thing they were about to compare against. lexists, so a link counts as
+    # taken whether or not it points anywhere.
+    if os.path.lexists(path):
+        for candidate in _numbered(path):
+            if not os.path.lexists(candidate):
                 return candidate
         raise BadDestination(f'Too many files named like {name} in {target}.')
     return path
+
+
+def _numbered(path):
+    for n in range(2, 1000):
+        yield path.with_name(f'{path.stem}-{n}{path.suffix}')
+
+
+def write_new(path, text):
+    """Write text to a file that did not exist a moment ago, and return where.
+
+    resolve_destination picks the name before a measurement that takes
+    minutes, so by the time the report is ready a file or a link may be at
+    that name. Creating exclusively, without following a link, leaves whatever
+    appeared alone and moves on to the next free numbered name.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+    for candidate in [path, *_numbered(path)]:
+        try:
+            fd = os.open(candidate, flags, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(text)
+        return candidate
+    raise OSError(f'Too many files named like {path.name} in {path.parent}.')
 
 
 # --------------------------------------------------------------------------
@@ -245,6 +313,8 @@ def load_baselines():
         with open(baselines_path(), 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
+    except NotYourFolder:       # as in load()
+        raise
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -253,27 +323,68 @@ def get_baseline(url, strategy):
     return load_baselines().get(_baseline_key(url, strategy))
 
 
-def save_baseline(url, strategy, snapshot):
-    """Atomic, like save(), and for the same reason."""
-    data = load_baselines()
-    data[_baseline_key(url, strategy)] = snapshot
+# Several compare jobs run at once in one server, and several servers can share
+# one folder. Every change to baselines.json reads the whole file, edits one
+# entry and writes it back, so two changes that overlap would each write back
+# what they read and one would be lost. The thread lock covers this process and
+# the file lock covers the others.
+_BASELINES_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _baselines_locked():
+    with _BASELINES_LOCK:
+        fd = os.open(baselines_path().with_name('baselines.lock'),
+                     os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                # LK_LOCK gives up after about ten seconds where flock waits.
+                # Keep waiting, so a slow save delays this one, not loses it.
+                while True:
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError as e:
+                        # Only "still locked" is worth waiting for. Anything
+                        # else would spin here for ever holding the thread lock.
+                        if e.errno not in (errno.EDEADLK, getattr(errno, 'EDEADLOCK', errno.EDEADLK)):
+                            raise
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)        # closing the descriptor releases either lock
+
+
+def _write_baselines(data):
+    """Atomic, like save(), and for the same reason. The temporary file has a
+    name of its own, so two writers never share one."""
     path = baselines_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='baselines.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     return path
 
 
+def save_baseline(url, strategy, snapshot):
+    with _baselines_locked():
+        data = load_baselines()
+        data[_baseline_key(url, strategy)] = snapshot
+        return _write_baselines(data)
+
+
 def clear_baseline(url, strategy):
-    data = load_baselines()
-    if data.pop(_baseline_key(url, strategy), None) is None:
-        return False
-    path = baselines_path()
-    tmp = path.with_suffix('.tmp')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
-    return True
+    with _baselines_locked():
+        data = load_baselines()
+        if data.pop(_baseline_key(url, strategy), None) is None:
+            return False
+        _write_baselines(data)
+        return True
