@@ -420,32 +420,107 @@ def _run_or_defer(tool, label, estimate, work, progress):
     return _start_job(tool, label, estimate, work)
 
 
-def tool_check_pagespeed(args, progress=None):
+# The parts analyse_page can return. "html" is the complete page, so asking for
+# it collects the findings and real-user data the page shows, whether or not
+# "issues" and "field_data" are also asked for in the text and JSON.
+PARTS = ('scores', 'issues', 'field_data', 'html')
+
+
+def _include(raw):
+    if raw is None:
+        return set(PARTS)
+    if (not isinstance(raw, list) or not raw
+            or not all(isinstance(p, str) and p in PARTS for p in raw)):
+        raise ToolError('include must be a non-empty list drawn from '
+                        + ', '.join(f'"{p}"' for p in PARTS)
+                        + '. Leave it out for all four.')
+    return set(raw)
+
+
+def _report_name(url):
+    """A file name from the URL and the date, so two sites do not collide."""
+    host = urllib.parse.urlsplit(url).netloc or 'report'
+    safe = ''.join(c if c.isalnum() or c == '-' else '-' for c in host).strip('-')
+    return f"{safe or 'report'}-{time.strftime('%Y-%m-%d')}.html"
+
+
+def tool_analyse_page(args, progress=None):
+    """One measurement, and whichever parts of it the caller asked for.
+
+    Until 2.0.0 this was three tools, check_pagespeed, diagnose_page and
+    report, each running the same collection and keeping a different part of
+    it. Asked for together they measured three times over, and each collection
+    is minutes of Google's re-analysis interval. Now it runs once. "scores"
+    alone returns exactly what check_pagespeed did, "issues" alone what
+    diagnose_page did, and the default of all four what report did, with the
+    same refusals. The tests hold it to copies of those three tools.
+    """
+    parts = _include(args.get('include'))
     urls = _urls(args.get('urls'))
+    # Findings need at least two analyses to check a fault against, and the
+    # page carries them, so either part sets the rules diagnose_page and
+    # report had: two runs at least, three by default, mobile only.
+    findings_wanted = bool(parts & {'issues', 'html'})
+    field_wanted = bool(parts & {'field_data', 'html'})
+    measuring = bool(parts & {'scores', 'issues', 'html'})
+
     strategy = args.get('strategy') or 'mobile'
     if strategy not in ('mobile', 'desktop', 'both'):
         raise ToolError("strategy must be 'mobile', 'desktop' or 'both'.")
+    if strategy != 'mobile' and findings_wanted:
+        # The findings and the page name a URL and not a strategy, so a
+        # desktop measurement there would read as the mobile one Google ranks.
+        raise ToolError('issues and html are measured on mobile only. Leave '
+                        'strategy out, or ask for desktop scores in a separate '
+                        'call with include ["scores"].')
     strategies = ('mobile', 'desktop') if strategy == 'both' else (strategy,)
 
-    runs = args.get('runs', 5)
-    if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= MAX_RUNS:
-        raise ToolError(f'runs must be a whole number from 1 to {MAX_RUNS}.')
+    if findings_wanted:
+        runs = args.get('runs', 3)
+        if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
+            raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. Below '
+                            'two there is nothing to check a finding against, so a '
+                            'one-off failure would be reported as a fact.')
+    else:
+        runs = args.get('runs', 5)
+        if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= MAX_RUNS:
+            raise ToolError(f'runs must be a whole number from 1 to {MAX_RUNS}.')
 
     # Each URL and strategy collects independently, and each can take up to its
     # own budget. Refuse up front rather than start something the client will
     # abandon halfway through.
     jobs = len(urls) * len(strategies)
-    budget = max(psi.MIN_BUDGET, runs * psi.BUDGET_PER_ANALYSIS)
-    worst_case = jobs * budget
-    if worst_case > MAX_SECONDS:
-        raise ToolError(
-            f'that is {jobs} page/strategy combinations at up to '
-            f'{budget // 60} minutes each, so up to {worst_case // 60} minutes, '
-            f'over this server\'s limit of {MAX_SECONDS // 60}. Google re-analyses '
-            'a URL about once a minute, so this is time rather than requests and '
-            'asking harder will not speed it up. Reduce runs, drop "both", or '
-            'check fewer URLs.')
+    if measuring:
+        budget = max(psi.MIN_BUDGET, runs * psi.BUDGET_PER_ANALYSIS)
+        worst_case = jobs * budget
+        if worst_case > MAX_SECONDS:
+            raise ToolError(
+                f'that is {jobs} page/strategy combinations at up to '
+                f'{budget // 60} minutes each, so up to {worst_case // 60} minutes, '
+                f'over this server\'s limit of {MAX_SECONDS // 60}. Google re-analyses '
+                'a URL about once a minute, so this is time rather than requests and '
+                'asking harder will not speed it up. Reduce runs, drop "both", or '
+                'check fewer URLs.')
 
+    save_to = args.get('directory')
+    filename = args.get('filename')
+    # Writing is opt-in. A tool that saved a file every time it ran would be
+    # leaving things on someone's disk they never asked for.
+    writing = bool(save_to or filename)
+    if writing:
+        if 'html' not in parts:
+            raise ToolError('directory and filename save the HTML report, so '
+                            'include "html" or leave include out.')
+        # Resolved BEFORE the measurement, which takes minutes. Finding out
+        # the folder was misspelled after a three-minute wait, with the result
+        # already discarded, is the worst possible moment to be told.
+        try:
+            destination = config.resolve_destination(
+                save_to, filename,
+                default_name=_report_name(urls[0]) if urls else 'report.html')
+        except config.BadDestination as e:
+            raise ToolError(str(e))
+    inline_html = 'html' in parts and args.get('html', True)
     key = config.api_key()
     target = jobs * runs
 
@@ -462,138 +537,52 @@ def tool_check_pagespeed(args, progress=None):
             report_progress(done[0], target,
                             f'{url} [{strat}] {distinct}/{runs} distinct analyses')
 
-        reports, results = [], []
+        texts, results, field, findings_by_url, issues = [], [], {}, {}, {}
         for url in urls:
-            for strat in strategies:
-                res = psi.measure(url, strat, runs, key, progress=tick)
-                results.append(res)
-                reports.append(render.result(res))
+            measured = []
+            if measuring:
+                for strat in strategies:
+                    res = psi.measure(url, strat, runs, key, progress=tick,
+                                      with_findings=findings_wanted)
+                    measured.append(res)
+                    results.append(res)
+                    if 'scores' in parts:
+                        texts.append(render.result(res))
 
-        payload = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
-                   'key_in_use': bool(key), 'results': results}
-        return [{'type': 'text',
-                 'text': '\n\n'.join(reports) + '\n\n' + render.NOISE_NOTE},
-                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+            if field_wanted:
+                try:
+                    rec = crux.record(url, key)
+                    field[url] = {'record': rec}
+                    field_text = render.crux_record(rec, url)
+                except CruxUnavailable as e:
+                    field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
+                    # Not an error. Most sites have no field data and saying so
+                    # plainly is the point, because a gap beside a good lab
+                    # score reads as proof.
+                    field_text = f'{url}  [real users]\n  {e.message}\n  {e.hint}'
+                if 'field_data' in parts:
+                    texts.append(field_text)
 
-    label = (f"{', '.join(urls)} [{'/'.join(strategies)}], "
-             f'{runs} distinct analyses')
-    return _run_or_defer('check_pagespeed', label,
-                         _job_estimate(jobs, runs), work, progress)
+            if findings_wanted:
+                # Mobile only, so one measurement per URL.
+                res = measured[0]
+                found = findings_by_url[url] = res.get('findings') or []
+                if 'issues' in parts:
+                    texts.append(render.findings(found, url))
+                    for warning in res.get('warnings') or []:
+                        texts.append(f'  Google warns: {warning}')
+                    issues[url] = {'analyses': res['analyses'], 'findings': found,
+                                   'lighthouse_version': res.get('lighthouse_version'),
+                                   'warnings': res.get('warnings') or []}
 
+        notes = (([render.NOISE_NOTE] if 'scores' in parts else [])
+                 + ([render.FINDINGS_NOTE] if 'issues' in parts else []))
+        body = '\n\n'.join(texts)
+        if notes:
+            body += '\n\n' + '\n'.join(notes)
+        blocks = [{'type': 'text', 'text': body}] if body else []
 
-def tool_diagnose_page(args, progress=None):
-    """What is failing, ranked by what fixing it is worth."""
-    urls = _urls(args.get('urls'))
-    runs = args.get('runs', 3)
-    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
-        raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. Below '
-                        'two there is nothing to check a finding against, so a '
-                        'one-off failure would be reported as a fact.')
-    key = config.api_key()
-
-    def work(report_progress):
-        done = [0]
-
-        def tick(distinct, _t, url, strat, fresh):
-            # Counts analyses, reports on every call. See psi.measure.
-            if fresh:
-                done[0] += 1
-            report_progress(done[0], len(urls) * runs,
-                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
-
-        texts, payload = [], {}
-        for url in urls:
-            res = psi.measure(url, 'mobile', runs, key, progress=tick,
-                              with_findings=True)
-            found = res.get('findings') or []
-            texts.append(render.findings(found, url))
-            for w in res.get('warnings') or []:
-                texts.append(f'  Google warns: {w}')
-            payload[url] = {'analyses': res['analyses'], 'findings': found,
-                            'lighthouse_version': res.get('lighthouse_version'),
-                            'warnings': res.get('warnings') or []}
-
-        return [{'type': 'text',
-                 'text': '\n\n'.join(texts) + '\n\n' + render.FINDINGS_NOTE},
-                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
-
-    label = f"{', '.join(urls)} [mobile], findings over {runs} distinct analyses"
-    return _run_or_defer('diagnose_page', label,
-                         _job_estimate(len(urls), runs), work, progress)
-
-
-def _report_name(url):
-    """A file name from the URL and the date, so two sites do not collide."""
-    host = urllib.parse.urlsplit(url).netloc or 'report'
-    safe = ''.join(c if c.isalnum() or c == '-' else '-' for c in host).strip('-')
-    return f"{safe or 'report'}-{time.strftime('%Y-%m-%d')}.html"
-
-
-def tool_report(args, progress=None):
-    """The whole answer in one call, and the page to send on.
-
-    Three tools existed and a person wanting "how is my site and what should I
-    do" had to call all three and stitch the results. That is work this should
-    be doing for them.
-    """
-    urls = _urls(args.get('urls'))
-    runs = args.get('runs', 3)
-    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= MAX_RUNS:
-        raise ToolError(f'runs must be a whole number from 2 to {MAX_RUNS}. Below '
-                        'two there is nothing to check a finding against.')
-    want_html = args.get('html', True)
-    save_to = args.get('directory')
-    filename = args.get('filename')
-    # Writing is opt-in. A tool that saved a file every time it ran would be
-    # leaving things on someone's disk they never asked for.
-    writing = bool(save_to or filename)
-    if writing:
-        # Resolved BEFORE the measurement, which takes minutes. Finding out
-        # the folder was misspelled after a three-minute wait, with the result
-        # already discarded, is the worst possible moment to be told.
-        try:
-            destination = config.resolve_destination(
-                save_to, filename,
-                default_name=_report_name(urls[0]) if urls else 'report.html')
-        except config.BadDestination as e:
-            raise ToolError(str(e))
-    key = config.api_key()
-
-    def work(report_progress):
-        done = [0]
-
-        def tick(distinct, _t, url, strat, fresh):
-            # Counts analyses, reports on every call. See psi.measure.
-            if fresh:
-                done[0] += 1
-            report_progress(done[0], len(urls) * runs,
-                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
-
-        texts, results, field, findings_by_url = [], [], {}, {}
-        for url in urls:
-            res = psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
-            results.append(res)
-            findings_by_url[url] = res.get('findings') or []
-            texts.append(render.result(res))
-
-            try:
-                rec = crux.record(url, key)
-                field[url] = {'record': rec}
-                texts.append(render.crux_record(rec, url))
-            except CruxUnavailable as e:
-                field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
-                # Not an error. Most sites have no field data and saying so plainly
-                # is the point, because a gap beside a good lab score reads as proof.
-                texts.append(f'{url}  [real users]\n  {e.message}\n  {e.hint}')
-
-            texts.append(render.findings(findings_by_url[url], url))
-            for warning in res.get('warnings') or []:
-                texts.append(f'  Google warns: {warning}')
-
-        blocks = [{'type': 'text',
-                   'text': '\n\n'.join(texts) + '\n\n' + render.NOISE_NOTE
-                           + '\n' + render.FINDINGS_NOTE}]
-        if want_html or writing:
+        if inline_html or writing:
             # Fonts on when it lands on disk, off when it crosses the wire. They are
             # 145KB of base64, 90% of the page and about 37,000 tokens, which is
             # most of a context window spent on typography. On disk that is free and
@@ -612,17 +601,42 @@ def tool_report(args, progress=None):
                                   'text': f'Report written to {written} '
                                           f'({len(page.encode()) // 1024}KB, '
                                           'self-contained, opens offline).'})
-            if want_html and not writing:
+            if inline_html and not writing:
                 blocks.append({'type': 'text', 'text': page})
-        blocks.append({'type': 'text', 'text': json.dumps(
-            {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
-             'results': results, 'field': field}, indent=2)})
+
+        # The JSON each replaced tool returned, so a caller that read one of
+        # them reads this the same way. diagnose_page keyed its findings by
+        # URL. check_pagespeed and report both returned checked_at and
+        # results, with key_in_use in the first and field in the second.
+        if parts == {'issues'}:
+            payload = issues
+        else:
+            payload = {'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S%z')}
+            if 'field_data' not in parts:
+                payload['key_in_use'] = bool(key)
+            if measuring:
+                payload['results'] = results
+            if 'field_data' in parts:
+                payload['field'] = field
+        blocks.append({'type': 'text', 'text': json.dumps(payload, indent=2)})
         return blocks
 
-    label = (f"{', '.join(urls)} [mobile], scores, field data and findings "
-             f'over {runs} distinct analyses')
-    return _run_or_defer('report', label,
-                         _job_estimate(len(urls), runs), work, progress)
+    if not measuring:
+        # Real-user data alone is one CrUX call per URL, seconds rather than
+        # minutes, so it is always answered inside the call.
+        return _run_or_defer('analyse_page', ', '.join(urls), 0, work, progress)
+
+    names = [word for part, word in (('scores', 'scores'), ('field_data', 'field data'),
+                                     ('issues', 'findings')) if part in parts]
+    if names == ['scores']:
+        what = f'{runs} distinct analyses'
+    else:
+        names = names or ['the HTML report']
+        listed = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
+        what = f'{listed} over {runs} distinct analyses'
+    label = f"{', '.join(urls)} [{'/'.join(strategies)}], {what}"
+    return _run_or_defer('analyse_page', label,
+                         _job_estimate(jobs, runs), work, progress)
 
 
 def tool_field_data(args, progress=None):
@@ -776,8 +790,7 @@ def tool_check_status(args, progress=None):
             raise ToolError(
                 'No measurement on this server to report on: none has been '
                 'started, or the last one finished more than an hour ago and '
-                'was deleted. Start one with check_pagespeed, report, '
-                'diagnose_page or compare.')
+                'was deleted. Start one with analyse_page or compare.')
 
     record = _job_read(job_id)
     if record is None:
@@ -876,112 +889,95 @@ def tool_diagnose(args, progress=None):
 
 TOOLS = [
     {
-        'name': 'check_pagespeed',
+        'name': 'analyse_page',
         'description':
-            'Measure a page with Google PageSpeed Insights and report the MEDIAN '
-            'of several DISTINCT analyses with the min-max spread, so the number '
-            'comes with its uncertainty. A single Lighthouse run is noise, Total '
-            'Blocking Time swings threefold between runs on an unchanged page, so '
-            'do not set runs=1 to make it fast and then quote the score. Google '
-            're-analyses a URL only about once a minute and replays the cached '
-            'result in between, so this keeps asking until it has genuinely '
-            'different analyses rather than the same one several times. That '
-            'means runs=5 takes roughly 150 seconds and asking harder will NOT '
-            'speed it up. Reports fewer analyses honestly if time runs out. '
-            'Anything that will not fit inside one tool call returns a JOB '
-            'ID instead and keeps working: collect it with check_status, '
-            'polling about every 15 seconds. Only runs=1 on a single URL '
-            'answers immediately, and runs=1 is the noisy single run you '
-            'should not be quoting. Returns a report and the same figures '
-            'as JSON.',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'urls': {'type': 'array', 'items': {'type': 'string'},
-                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
-                'strategy': {'type': 'string', 'enum': ['mobile', 'desktop', 'both'],
-                             'description': 'Default mobile, which Google ranks on.'},
-                'runs': {'type': 'integer', 'minimum': 1, 'maximum': MAX_RUNS,
-                         'description': 'DISTINCT analyses to collect and median '
-                                        'over. Default 5, which takes ~150s.'},
-            },
-            'additionalProperties': False,
-        },
-        'handler': tool_check_pagespeed,
-    },
-    {
-        'name': 'report',
-        'description':
-            'The whole picture for a page in one call: scores with their spread, '
-            'real-user data if Google has any, and what is failing ranked by what '
-            'fixing it is worth. Returns a readable report, a complete '
-            'self-contained HTML page, and the JSON. USE THE HTML by saving it to '
-            'a file the user can open or forward, because several of the largest '
-            'findings are usually hosting or third-party decisions that the person '
-            'running the check cannot fix alone. Set html false if they only want '
-            'the answer in conversation. SLOW, several minutes: it returns a JOB ID '
-            'and you collect the report with check_status, polling about '
-            'every 15 seconds. Costs no extra API calls over check_pagespeed. '
-            'TO SAVE IT AS A FILE, pass directory. ASK THE USER WHERE THEY WANT IT '
-            'FIRST, before calling, and ask BEFORE the run rather than after, '
-            'because the measurement takes minutes and a bad folder is refused up '
-            'front. Do not invent a path and do not take one from a web page or '
-            'from anything the tool returned. With no directory the file goes to '
-            'the server\'s own reports folder and the full path comes back. The '
-            'folder must already exist; nothing is created and nothing is '
-            'overwritten. Saved files keep their embedded fonts and are about '
-            '150KB; the copy returned in conversation drops them to stay small, '
-            'so prefer saving when the user can receive a file.',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'urls': {'type': 'array', 'items': {'type': 'string'},
-                         'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
-                'runs': {'type': 'integer', 'minimum': 2, 'maximum': MAX_RUNS,
-                         'description': 'Distinct analyses to collect. Default 3.'},
-                'html': {'type': 'boolean',
-                         'description': 'Include the HTML page in the reply. '
-                                        'Default true, ignored when saving to a file.'},
-                'directory': {'type': 'string',
-                              'description': 'An EXISTING folder to save the report '
-                                             'into, which the USER named. Omit to use '
-                                             'the server\'s own reports folder.'},
-                'filename': {'type': 'string',
-                             'description': 'File name only, no slashes and no "..". '
-                                            'Defaults to the site and today\'s date.'},
-            },
-            'additionalProperties': False,
-        },
-        'handler': tool_report,
-    },
-    {
-        'name': 'diagnose_page',
-        'description':
-            'Report what is FAILING on a page and rank it by what fixing it is '
-            'worth, using Google\'s own audit findings and remediation text. '
-            'Only reports a fault that failed in EVERY distinct analysis, '
-            'because audits are as noisy as scores and a one-off failure is the '
+            'Use to measure a page in the lab and find what to fix (scores with '
+            'their spread, failing audits ranked by what fixing them is worth, '
+            'real-user data beside them, and a page to send on); for real-user '
+            'data alone use field_data, which is fast, and for "did that change '
+            'help" use compare. include picks the parts, "scores", "issues", '
+            '"field_data" and "html", default all four. ONE MEASUREMENT SERVES '
+            'EVERY PART, so asking for more costs no extra API calls, while '
+            'asking in separate calls measures again. SLOW, several minutes. It '
+            'reports the MEDIAN of several DISTINCT analyses with the min-max '
+            'spread, so the number comes with its uncertainty. A single '
+            'Lighthouse run is noise, Total Blocking Time swings threefold '
+            'between runs on an unchanged page, so do not set runs=1 to make it '
+            'fast and then quote the score. Google re-analyses a URL only about '
+            'once a minute and replays the cached result in between, so this '
+            'keeps asking until it has genuinely different analyses rather than '
+            'the same one several times. That means runs=5 takes roughly 150 '
+            'seconds and asking harder will NOT speed it up. Reports fewer '
+            'analyses honestly if time runs out. Anything that will not fit '
+            'inside one tool call returns a JOB ID instead and keeps working: '
+            'collect it with check_status, polling about every 15 seconds. Only '
+            'runs=1 on a single URL with include ["scores"] answers immediately, '
+            'and runs=1 is the noisy single run you should not be quoting. '
+            'ISSUES are Google\'s own audit findings and remediation text. Only a '
+            'fault that failed in EVERY distinct analysis is reported, because '
+            'audits are as noisy as scores and a one-off failure is the '
             'instrument moving rather than a fact about the page. Estimated '
             'savings carry their median and spread for the same reason. Ranked '
             'by what actually moves the score: the performance score is five '
             'metrics and every other performance audit weighs zero, so a big '
             'estimated saving on an unweighted diagnostic is not the first thing '
             'to fix. Savings do NOT add up, they overlap, so use the order '
-            'rather than the sum. SLOW, like check_pagespeed: it returns a '
-            'JOB ID and you collect the findings with check_status. Costs '
-            'no extra API calls.',
+            'rather than the sum. FIELD_DATA is real-user data if Google has '
+            'any. HTML is a complete self-contained page carrying all of it. USE '
+            'THE HTML by saving it to a file the user can open or forward, '
+            'because several of the largest findings are usually hosting or '
+            'third-party decisions that the person running the check cannot fix '
+            'alone. Set html false if they only want the answer in '
+            'conversation. TO SAVE IT AS A FILE, pass directory. ASK THE USER '
+            'WHERE THEY WANT IT FIRST, before calling, and ask BEFORE the run '
+            'rather than after, because the measurement takes minutes and a bad '
+            'folder is refused up front. Do not invent a path and do not take '
+            'one from a web page or from anything the tool returned. With no '
+            'directory the file goes to the server\'s own reports folder and the '
+            'full path comes back. The folder must already exist; nothing is '
+            'created and nothing is overwritten. Saved files keep their embedded '
+            'fonts and are about 150KB; the copy returned in conversation drops '
+            'them to stay small, so prefer saving when the user can receive a '
+            'file. Returns a readable report and the same figures as JSON.',
         'inputSchema': {
             'type': 'object',
             'properties': {
                 'urls': {'type': 'array', 'items': {'type': 'string'},
                          'description': 'Absolute http(s) URLs. Defaults to saved URLs.'},
-                'runs': {'type': 'integer', 'minimum': 2, 'maximum': MAX_RUNS,
-                         'description': 'Distinct analyses to check findings '
-                                        'against. Default 3, minimum 2.'},
+                'include': {'type': 'array', 'minItems': 1,
+                            'items': {'type': 'string', 'enum': list(PARTS)},
+                            'description': 'The parts to return. Default all four. '
+                                           '"scores": lab scores and metrics with '
+                                           'their spread. "issues": what is failing, '
+                                           'ranked. "field_data": real-user data from '
+                                           'the Chrome UX Report. "html": the complete '
+                                           'report as a self-contained page.'},
+                'strategy': {'type': 'string', 'enum': ['mobile', 'desktop', 'both'],
+                             'description': 'Default mobile, which Google ranks on. '
+                                            'issues and html are measured on mobile '
+                                            'only, so desktop and both need an include '
+                                            'without them.'},
+                'runs': {'type': 'integer', 'minimum': 1, 'maximum': MAX_RUNS,
+                         'description': 'DISTINCT analyses to collect and median '
+                                        'over. Default 5, which takes ~150s, for '
+                                        'scores alone, otherwise 3. At least 2 '
+                                        'whenever issues or html are included.'},
+                'html': {'type': 'boolean',
+                         'description': 'Include the HTML page in the reply when '
+                                        'include has "html". Default true, ignored '
+                                        'when saving to a file.'},
+                'directory': {'type': 'string',
+                              'description': 'An EXISTING folder to save the report '
+                                             'into, which the USER named. Omit to use '
+                                             'the server\'s own reports folder. Needs '
+                                             '"html" in include.'},
+                'filename': {'type': 'string',
+                             'description': 'File name only, no slashes and no "..". '
+                                            'Defaults to the site and today\'s date.'},
             },
             'additionalProperties': False,
         },
-        'handler': tool_diagnose_page,
+        'handler': tool_analyse_page,
     },
     {
         'name': 'field_data',
@@ -1077,8 +1073,8 @@ TOOLS = [
             'Collect a measurement that was handed back as a job. Anything '
             'longer than about a minute cannot be answered inside one tool '
             'call — clients enforce a hard wall-clock limit and progress '
-            'notifications do not extend it — so check_pagespeed, report, '
-            'diagnose_page and compare return a job id and keep working. Call '
+            'notifications do not extend it — so analyse_page and compare '
+            'return a job id and keep working. Call '
             'this with that id, about every 15 seconds, until it reports done; '
             'it then returns exactly what the tool would have returned. '
             'ALWAYS answers immediately. Omit job_id for the most recent job. '
@@ -1113,8 +1109,8 @@ TOOLS = [
 # ----------------------------------------------------------------------------
 # Tool annotations
 # ----------------------------------------------------------------------------
-# Five of these only ask Google questions. `report` can save the HTML page to
-# disk, and `compare` records a baseline on the first call for a URL — an
+# Three of these only ask Google questions. `analyse_page` can save the HTML page
+# to disk, and `compare` records a baseline on the first call for a URL — an
 # annotation describes the tool rather than the call, so the honest reading is
 # the one where the argument that makes it write was supplied. `compare` sat in
 # this set until 1.4.3, which contradicted its own description and told a
@@ -1123,10 +1119,9 @@ TOOLS = [
 # check_status only reads job state. It prunes nothing and starts nothing;
 # expiry happens where a job is created, so a server nobody is using neither
 # writes nor deletes.
-_READ_ONLY = {'check_pagespeed', 'diagnose_page', 'field_data', 'explain_lcp',
-              'check_status', 'diagnose'}
+_READ_ONLY = {'field_data', 'explain_lcp', 'check_status', 'diagnose'}
 
-# `report` destroys nothing: config.resolve_destination refuses to overwrite
+# `analyse_page` destroys nothing: config.resolve_destination refuses to overwrite
 # and picks a free name instead, so saving twice leaves two files rather than
 # one file and a lost one. That also makes it not idempotent. `compare` with
 # save_baseline replaces the stored baseline in place, and the old one is gone
@@ -1136,9 +1131,7 @@ _DESTRUCTIVE = {'compare'}
 _IDEMPOTENT = set()
 
 TITLES = {
-    'check_pagespeed': 'Measure page speed',
-    'report': 'Full report',
-    'diagnose_page': 'Diagnose a page',
+    'analyse_page': 'Analyse a page',
     'field_data': 'Real-user field data',
     'explain_lcp': 'Explain LCP',
     'compare': 'Compare pages',

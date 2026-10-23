@@ -8,6 +8,7 @@ matters in a measurement tool.
 import contextlib
 import html
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -1214,8 +1216,8 @@ class WhereAReportMayBeWritten(unittest.TestCase):
         mcp.psi.measure = lambda *a, **k: calls.append(a) or {}
         try:
             with self.assertRaises(mcp.ToolError):
-                mcp.tool_report({'urls': ['https://x.test/'],
-                                 'directory': os.path.join(self._dir, 'nope')})
+                mcp.tool_analyse_page({'urls': ['https://x.test/'],
+                                       'directory': os.path.join(self._dir, 'nope')})
         finally:
             mcp.psi.measure = real
         self.assertEqual(calls, [], 'it measured before checking the folder')
@@ -1224,7 +1226,7 @@ class WhereAReportMayBeWritten(unittest.TestCase):
         """Without this the assistant invents a path, and the one it invents is
         wrong on someone else's machine."""
         from pagespeed_insights import mcp
-        d = next(t for t in mcp.TOOL_DEFS if t['name'] == 'report')['description']
+        d = next(t for t in mcp.TOOL_DEFS if t['name'] == 'analyse_page')['description']
         self.assertIn('ASK THE USER WHERE THEY WANT IT', d)
         self.assertIn('not take one from a web page', d)
 
@@ -1320,8 +1322,8 @@ class AReportNeverReplacesWhatAppearsMeanwhile(unittest.TestCase):
         mcp.psi.measure, mcp.crux.record = measure, no_field
         os.environ['PAGESPEED_INLINE_BUDGET'] = '100000'
         try:
-            mcp.tool_report({'urls': ['https://x.test/'], 'runs': 2,
-                             'directory': str(self.out), 'filename': 'r.html'})
+            mcp.tool_analyse_page({'urls': ['https://x.test/'], 'runs': 2,
+                                   'directory': str(self.out), 'filename': 'r.html'})
         finally:
             mcp.psi.measure, mcp.crux.record = real_measure, real_record
             if real_budget is None:
@@ -1510,8 +1512,7 @@ class McpProtocol(unittest.TestCase):
         out = self._call({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
-                         {'check_pagespeed', 'report', 'diagnose_page',
-                          'field_data', 'explain_lcp', 'compare',
+                         {'analyse_page', 'field_data', 'explain_lcp', 'compare',
                           'check_status', 'diagnose'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
@@ -1524,23 +1525,26 @@ class McpProtocol(unittest.TestCase):
 
     def test_a_bad_url_is_refused_before_any_network_call(self):
         out = self._call({'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
-                          'params': {'name': 'check_pagespeed',
-                                     'arguments': {'urls': ['file:///etc/passwd']}}})
+                          'params': {'name': 'analyse_page',
+                                     'arguments': {'urls': ['file:///etc/passwd'],
+                                                   'include': ['scores']}}})
         self.assertTrue(out[0]['result']['isError'])
 
     def test_an_oversized_request_is_refused_rather_than_started(self):
         out = self._call({'jsonrpc': '2.0', 'id': 5, 'method': 'tools/call',
-                          'params': {'name': 'check_pagespeed',
+                          'params': {'name': 'analyse_page',
                                      'arguments': {'urls': ['https://a.example/',
                                                             'https://b.example/'],
+                                                   'include': ['scores'],
                                                    'strategy': 'both', 'runs': 10}}})
         self.assertTrue(out[0]['result']['isError'])
 
     def test_runs_must_be_a_whole_number(self):
         for bad in (0, 11, True, 2.5, 'five'):
             out = self._call({'jsonrpc': '2.0', 'id': 6, 'method': 'tools/call',
-                              'params': {'name': 'check_pagespeed',
+                              'params': {'name': 'analyse_page',
                                          'arguments': {'urls': ['https://a.example/'],
+                                                       'include': ['scores'],
                                                        'runs': bad}}})
             self.assertTrue(out[0]['result'].get('isError'), f'runs={bad!r} was allowed')
 
@@ -1999,18 +2003,18 @@ class Annotations(unittest.TestCase):
             self.assertNotIn('destructiveHint', ann)
             self.assertNotIn('idempotentHint', ann)
 
-    def test_report_is_not_read_only_because_it_can_write_a_file(self):
+    def test_analyse_page_is_not_read_only_because_it_can_write_a_file(self):
         # The only tool here that touches the disk. An annotation describes the
         # tool and not the call, so passing directory or filename is the case
         # that decides it.
-        ann = self.mcp._annotations('report')
+        ann = self.mcp._annotations('analyse_page')
         self.assertFalse(ann['readOnlyHint'])
         self.assertIn('destructiveHint', ann)
 
     def test_saving_a_report_destroys_nothing(self):
         # config.resolve_destination picks a free name rather than overwriting,
         # which is what makes this additive and also what makes it non-idempotent.
-        ann = self.mcp._annotations('report')
+        ann = self.mcp._annotations('analyse_page')
         self.assertFalse(ann['destructiveHint'])
         self.assertFalse(ann['idempotentHint'])
 
@@ -2067,9 +2071,9 @@ class AnnotationsOverStdio(unittest.TestCase):
 
     def test_the_hints_that_arrive_are_the_ones_declared(self):
         by_name = {t['name']: t for t in self._tools_list()}
-        self.assertTrue(by_name['check_pagespeed']['annotations']['readOnlyHint'])
-        self.assertFalse(by_name['report']['annotations']['readOnlyHint'])
-        self.assertFalse(by_name['report']['annotations']['destructiveHint'])
+        self.assertTrue(by_name['field_data']['annotations']['readOnlyHint'])
+        self.assertFalse(by_name['analyse_page']['annotations']['readOnlyHint'])
+        self.assertFalse(by_name['analyse_page']['annotations']['destructiveHint'])
         self.assertFalse(by_name['compare']['annotations']['readOnlyHint'])
         self.assertTrue(by_name['compare']['annotations']['destructiveHint'])
 
@@ -2343,14 +2347,14 @@ class JobsOutliveTheCall(unittest.TestCase):
     def test_work_that_fits_is_still_answered_inside_the_call(self):
         """Deferring an eight-second check would be ceremony for nothing."""
         blocks = self.mcp._run_or_defer(
-            'check_pagespeed', 'one analysis', 12,
+            'analyse_page', 'one analysis', 12,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
         self.assertEqual(blocks[0]['text'], 'the report')
         self.assertEqual(self.mcp._JOBS, {})
 
     def test_work_that_does_not_fit_is_handed_back_as_a_job(self):
         blocks = self.mcp._run_or_defer(
-            'check_pagespeed', 'five analyses', 252,
+            'analyse_page', 'five analyses', 252,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
         self.assertIn('check_status', blocks[0]['text'])
         job_id = self._job_id(blocks)
@@ -2365,8 +2369,8 @@ class JobsOutliveTheCall(unittest.TestCase):
             return [{'type': 'text', 'text': 'body'},
                     {'type': 'text', 'text': '{"json": true}'}]
 
-        inline = self.mcp._run_or_defer('check_pagespeed', 'x', 1, work, None)
-        deferred = self.mcp._run_or_defer('check_pagespeed', 'x', 999, work, None)
+        inline = self.mcp._run_or_defer('analyse_page', 'x', 1, work, None)
+        deferred = self.mcp._run_or_defer('analyse_page', 'x', 999, work, None)
         job_id = self._job_id(deferred)
         self._wait_for(job_id, 'done')
         self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}), inline)
@@ -2380,7 +2384,7 @@ class JobsOutliveTheCall(unittest.TestCase):
             release.wait(5)
             return [{'type': 'text', 'text': 'late'}]
 
-        blocks = self.mcp._run_or_defer('check_pagespeed', 'slow', 999, work, None)
+        blocks = self.mcp._run_or_defer('analyse_page', 'slow', 999, work, None)
         job_id = self._job_id(blocks)
         try:
             started = time.monotonic()
@@ -2399,7 +2403,7 @@ class JobsOutliveTheCall(unittest.TestCase):
             release.wait(5)
             return [{'type': 'text', 'text': 'late'}]
 
-        blocks = self.mcp._run_or_defer('check_pagespeed', 'slow', 999, work, None)
+        blocks = self.mcp._run_or_defer('analyse_page', 'slow', 999, work, None)
         job_id = self._job_id(blocks)
         try:
             deadline = time.monotonic() + 5
@@ -2419,7 +2423,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         def raiser(report):
             raise ValueError('the measurement broke')
 
-        blocks = self.mcp._run_or_defer('check_pagespeed', 'x', 999, raiser, None)
+        blocks = self.mcp._run_or_defer('analyse_page', 'x', 999, raiser, None)
         job_id = self._job_id(blocks)
         self._wait_for(job_id, 'failed')
         with self.assertRaises(self.mcp.ToolError) as caught:
@@ -2431,7 +2435,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         and more than one can be alive at once, so the poll and the worker are
         not reliably in the same process. Memory alone would lose the answer."""
         blocks = self.mcp._run_or_defer(
-            'check_pagespeed', 'x', 999,
+            'analyse_page', 'x', 999,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
         job_id = self._job_id(blocks)
         self._wait_for(job_id, 'done')
@@ -2442,7 +2446,7 @@ class JobsOutliveTheCall(unittest.TestCase):
     def test_a_job_whose_worker_died_is_reported_lost(self):
         """Reported, because a job silently stuck on 'running' is a caller
         polling forever."""
-        record = {'id': 'deadbeef', 'tool': 'check_pagespeed', 'label': 'x',
+        record = {'id': 'deadbeef', 'tool': 'analyse_page', 'label': 'x',
                   'status': 'running', 'started': time.time() - 9000,
                   'updated': time.time() - 9000, 'finished': None,
                   'estimate': 300, 'progress': 'measuring', 'done': 1,
@@ -2459,7 +2463,7 @@ class JobsOutliveTheCall(unittest.TestCase):
     def test_the_most_recent_job_is_the_default(self):
         """Losing the id should not lose the measurement."""
         blocks = self.mcp._run_or_defer(
-            'check_pagespeed', 'x', 999,
+            'analyse_page', 'x', 999,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
         self._wait_for(self._job_id(blocks), 'done')
         self.assertEqual(self.mcp.tool_check_status({}),
@@ -2475,10 +2479,10 @@ class JobsOutliveTheCall(unittest.TestCase):
             return []
 
         for _ in range(self.mcp.MAX_ACTIVE_JOBS):
-            self.mcp._run_or_defer('check_pagespeed', 'x', 999, work, None)
+            self.mcp._run_or_defer('analyse_page', 'x', 999, work, None)
         try:
             with self.assertRaises(self.mcp.ToolError) as caught:
-                self.mcp._run_or_defer('check_pagespeed', 'x', 999,
+                self.mcp._run_or_defer('analyse_page', 'x', 999,
                                        lambda report: [], None)
             self.assertIn('already running', str(caught.exception))
         finally:
@@ -2514,7 +2518,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         os.environ['PAGESPEED_CONFIG_DIR'] = str(unwritable / 'cannot-create')
         try:
             blocks = self.mcp._run_or_defer(
-                'check_pagespeed', 'x', 999,
+                'analyse_page', 'x', 999,
                 lambda report: [{'type': 'text', 'text': 'the report'}], None)
             job_id = self._job_id(blocks)
             self._wait_for(job_id, 'done')
@@ -2531,14 +2535,496 @@ class JobsOutliveTheCall(unittest.TestCase):
         real_send, self.mcp._send = self.mcp._send, sent.append
         try:
             self.mcp.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                             'params': {'name': 'check_pagespeed',
+                             'params': {'name': 'analyse_page',
                                         'arguments': {'urls': ['file:///etc/passwd'],
+                                                      'include': ['scores'],
                                                       'runs': 5}}})
         finally:
             self.mcp._send = real_send
         self.assertTrue(sent[0]['result']['isError'])
         self.assertEqual(self.mcp._JOBS, {})
         self.assertEqual(list(config.jobs_dir().glob('*.json')), [])
+
+
+# ---------------------------------------------------------------------------
+# analyse_page replaced check_pagespeed, diagnose_page and report in 2.0.0
+#
+# The three functions below are those tools copied verbatim from 1.5.2
+# (64625b1), with only the module-level names qualified as mcp.<name> so they
+# run against the live module. They are the oracle: analyse_page must return
+# exactly what each of them returned for the same request. Being code rather
+# than frozen output, a later change to the renderer moves both sides alike.
+# ---------------------------------------------------------------------------
+from pagespeed_insights import mcp                                # noqa: E402
+
+
+def _v1_check_pagespeed(args, progress=None):
+    urls = mcp._urls(args.get('urls'))
+    strategy = args.get('strategy') or 'mobile'
+    if strategy not in ('mobile', 'desktop', 'both'):
+        raise mcp.ToolError("strategy must be 'mobile', 'desktop' or 'both'.")
+    strategies = ('mobile', 'desktop') if strategy == 'both' else (strategy,)
+
+    runs = args.get('runs', 5)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= mcp.MAX_RUNS:
+        raise mcp.ToolError(f'runs must be a whole number from 1 to {mcp.MAX_RUNS}.')
+
+    # Each URL and strategy collects independently, and each can take up to its
+    # own budget. Refuse up front rather than start something the client will
+    # abandon halfway through.
+    jobs = len(urls) * len(strategies)
+    budget = max(mcp.psi.MIN_BUDGET, runs * mcp.psi.BUDGET_PER_ANALYSIS)
+    worst_case = jobs * budget
+    if worst_case > mcp.MAX_SECONDS:
+        raise mcp.ToolError(
+            f'that is {jobs} page/strategy combinations at up to '
+            f'{budget // 60} minutes each, so up to {worst_case // 60} minutes, '
+            f'over this server\'s limit of {mcp.MAX_SECONDS // 60}. Google re-analyses '
+            'a URL about once a minute, so this is time rather than requests and '
+            'asking harder will not speed it up. Reduce runs, drop "both", or '
+            'check fewer URLs.')
+
+    key = mcp.config.api_key()
+    target = jobs * runs
+
+    def work(report_progress):
+        done = [0]
+
+        def tick(distinct, _target, url, strat, fresh):
+            # Counts ANALYSES but reports on every CALL. The count has to
+            # reflect measurements collected rather than requests spent, and
+            # the report has to arrive often enough to show the thing is alive,
+            # and those are different rates.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], target,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+        reports, results = [], []
+        for url in urls:
+            for strat in strategies:
+                res = mcp.psi.measure(url, strat, runs, key, progress=tick)
+                results.append(res)
+                reports.append(mcp.render.result(res))
+
+        payload = {'checked_at': mcp.time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                   'key_in_use': bool(key), 'results': results}
+        return [{'type': 'text',
+                 'text': '\n\n'.join(reports) + '\n\n' + mcp.render.NOISE_NOTE},
+                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+    label = (f"{', '.join(urls)} [{'/'.join(strategies)}], "
+             f'{runs} distinct analyses')
+    return mcp._run_or_defer('check_pagespeed', label,
+                         mcp._job_estimate(jobs, runs), work, progress)
+
+
+def _v1_diagnose_page(args, progress=None):
+    """What is failing, ranked by what fixing it is worth."""
+    urls = mcp._urls(args.get('urls'))
+    runs = args.get('runs', 3)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= mcp.MAX_RUNS:
+        raise mcp.ToolError(f'runs must be a whole number from 2 to {mcp.MAX_RUNS}. Below '
+                        'two there is nothing to check a finding against, so a '
+                        'one-off failure would be reported as a fact.')
+    key = mcp.config.api_key()
+
+    def work(report_progress):
+        done = [0]
+
+        def tick(distinct, _t, url, strat, fresh):
+            # Counts analyses, reports on every call. See psi.measure.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], len(urls) * runs,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+        texts, payload = [], {}
+        for url in urls:
+            res = mcp.psi.measure(url, 'mobile', runs, key, progress=tick,
+                              with_findings=True)
+            found = res.get('findings') or []
+            texts.append(mcp.render.findings(found, url))
+            for w in res.get('warnings') or []:
+                texts.append(f'  Google warns: {w}')
+            payload[url] = {'analyses': res['analyses'], 'findings': found,
+                            'lighthouse_version': res.get('lighthouse_version'),
+                            'warnings': res.get('warnings') or []}
+
+        return [{'type': 'text',
+                 'text': '\n\n'.join(texts) + '\n\n' + mcp.render.FINDINGS_NOTE},
+                {'type': 'text', 'text': json.dumps(payload, indent=2)}]
+
+    label = f"{', '.join(urls)} [mobile], findings over {runs} distinct analyses"
+    return mcp._run_or_defer('diagnose_page', label,
+                         mcp._job_estimate(len(urls), runs), work, progress)
+
+
+def _v1_report(args, progress=None):
+    """The whole answer in one call, and the page to send on.
+
+    Three tools existed and a person wanting "how is my site and what should I
+    do" had to call all three and stitch the results. That is work this should
+    be doing for them.
+    """
+    urls = mcp._urls(args.get('urls'))
+    runs = args.get('runs', 3)
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 2 <= runs <= mcp.MAX_RUNS:
+        raise mcp.ToolError(f'runs must be a whole number from 2 to {mcp.MAX_RUNS}. Below '
+                        'two there is nothing to check a finding against.')
+    want_html = args.get('html', True)
+    save_to = args.get('directory')
+    filename = args.get('filename')
+    # Writing is opt-in. A tool that saved a file every time it ran would be
+    # leaving things on someone's disk they never asked for.
+    writing = bool(save_to or filename)
+    if writing:
+        # Resolved BEFORE the measurement, which takes minutes. Finding out
+        # the folder was misspelled after a three-minute wait, with the result
+        # already discarded, is the worst possible moment to be told.
+        try:
+            destination = mcp.config.resolve_destination(
+                save_to, filename,
+                default_name=mcp._report_name(urls[0]) if urls else 'report.html')
+        except mcp.config.BadDestination as e:
+            raise mcp.ToolError(str(e))
+    key = mcp.config.api_key()
+
+    def work(report_progress):
+        done = [0]
+
+        def tick(distinct, _t, url, strat, fresh):
+            # Counts analyses, reports on every call. See psi.measure.
+            if fresh:
+                done[0] += 1
+            report_progress(done[0], len(urls) * runs,
+                            f'{url} [{strat}] {distinct}/{runs} distinct analyses')
+
+        texts, results, field, findings_by_url = [], [], {}, {}
+        for url in urls:
+            res = mcp.psi.measure(url, 'mobile', runs, key, progress=tick, with_findings=True)
+            results.append(res)
+            findings_by_url[url] = res.get('findings') or []
+            texts.append(mcp.render.result(res))
+
+            try:
+                rec = mcp.crux.record(url, key)
+                field[url] = {'record': rec}
+                texts.append(mcp.render.crux_record(rec, url))
+            except CruxUnavailable as e:
+                field[url] = {'unavailable': {'reason': e.reason, 'message': e.message}}
+                # Not an error. Most sites have no field data and saying so plainly
+                # is the point, because a gap beside a good lab score reads as proof.
+                texts.append(f'{url}  [real users]\n  {e.message}\n  {e.hint}')
+
+            texts.append(mcp.render.findings(findings_by_url[url], url))
+            for warning in res.get('warnings') or []:
+                texts.append(f'  Google warns: {warning}')
+
+        blocks = [{'type': 'text',
+                   'text': '\n\n'.join(texts) + '\n\n' + mcp.render.NOISE_NOTE
+                           + '\n' + mcp.render.FINDINGS_NOTE}]
+        if want_html or writing:
+            # Fonts on when it lands on disk, off when it crosses the wire. They are
+            # 145KB of base64, 90% of the page and about 37,000 tokens, which is
+            # most of a context window spent on typography. On disk that is free and
+            # the page keeps its typography anywhere it is opened. Same renderer
+            # either way: a second one is how two versions start disagreeing about a
+            # number.
+            page = mcp.report.build(results, field=field, findings_by_url=findings_by_url,
+                                generated=mcp.time.strftime('%d %B %Y'),
+                                inline_fonts=bool(writing))
+            if writing:
+                try:
+                    written = mcp.config.write_new(destination, page)
+                except OSError as e:
+                    raise mcp.ToolError(f'Could not write {destination}: {e}')
+                blocks.insert(0, {'type': 'text',
+                                  'text': f'Report written to {written} '
+                                          f'({len(page.encode()) // 1024}KB, '
+                                          'self-contained, opens offline).'})
+            if want_html and not writing:
+                blocks.append({'type': 'text', 'text': page})
+        blocks.append({'type': 'text', 'text': json.dumps(
+            {'checked_at': mcp.time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+             'results': results, 'field': field}, indent=2)})
+        return blocks
+
+    label = (f"{', '.join(urls)} [mobile], scores, field data and findings "
+             f'over {runs} distinct analyses')
+    return mcp._run_or_defer('report', label,
+                         mcp._job_estimate(len(urls), runs), work, progress)
+
+
+class _FakeGoogle:
+    """PageSpeed and CrUX stand-ins that count every call.
+
+    Every PageSpeed call is a fresh analysis, so collecting `runs` distinct
+    analyses costs exactly `runs` calls per page and strategy, and any call
+    beyond that is a second measurement. Numbers come from the call count, so
+    reset() before each request makes two requests see identical data. The
+    clock is frozen so the dates in the output are the same either side.
+    """
+
+    FIXED = {'%Y-%m-%dT%H:%M:%S%z': '2026-10-23T09:00:00+0000',
+             '%d %B %Y': '23 October 2026', '%Y-%m-%d': '2026-10-23'}
+
+    RECORD = {'scope': 'origin',
+              'period': {'first': '2026-09-25', 'last': '2026-10-22'},
+              'metrics': {'LCP': {'p75': 2100, 'histogram': [
+                  {'start': 0, 'end': 2500, 'density': 0.71},
+                  {'start': 2500, 'end': 4000, 'density': 0.19},
+                  {'start': 4000, 'end': None, 'density': 0.10}]}},
+              'lcp_phases': {}, 'shares': {}}
+
+    def __init__(self, inline_budget='100000'):
+        self.inline_budget = inline_budget
+        self.psi_calls, self.crux_calls = [], []
+
+    def reset(self):
+        self.psi_calls.clear()
+        self.crux_calls.clear()
+
+    def fetch(self, url, strategy='mobile', key=None, **_):
+        self.psi_calls.append((url, strategy))
+        n = len(self.psi_calls)
+        lhr = json.loads(json.dumps(Findings.LHR))
+        lhr['fetchTime'] = f'2026-10-23T08:{n // 60:02d}:{n % 60:02d}.000Z'
+        lhr['lighthouseVersion'] = '12.8.2'
+        lhr['runWarnings'] = ([f'The page was redirected to {url}landing']
+                              if 'b.test' in url else [])
+        lhr['categories']['performance']['score'] = (30 + 7 * n % 40) / 100
+        lhr['categories']['accessibility']['score'] = 0.9
+        lhr['audits']['largest-contentful-paint']['numericValue'] = 2000 + 113 * n
+        lhr['audits']['first-contentful-paint'] = {
+            'title': 'First Contentful Paint', 'score': 0.5,
+            'scoreDisplayMode': 'numeric', 'numericValue': 900 + 41 * n}
+        lhr['audits']['unused-javascript']['metricSavings'] = {'LCP': 1000 + 100 * (n % 3)}
+        return {'lighthouseResult': lhr,
+                'loadingExperience': {'id': url, 'metrics': {
+                    'LARGEST_CONTENTFUL_PAINT_MS': {'percentile': 2100,
+                                                    'category': 'AVERAGE'}}}}
+
+    def record(self, url, key, **_):
+        self.crux_calls.append(url)
+        if 'a.test' in url:
+            return json.loads(json.dumps(self.RECORD))
+        raise CruxUnavailable('Google has no real-user data for this site.',
+                              'no_data', 'That is a traffic threshold, not a fault.')
+
+    def __enter__(self):
+        real_measure = psi.measure
+
+        def measure(*a, **k):
+            k.setdefault('sleep', lambda _s: None)
+            return real_measure(*a, **k)
+
+        stack = self._stack = contextlib.ExitStack()
+        self.tmp = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(mock.patch.dict(os.environ, {
+            'PAGESPEED_CONFIG_DIR': self.tmp, 'PAGESPEED_API_KEY': 'test-key',
+            'PAGESPEED_INLINE_BUDGET': self.inline_budget}))
+        stack.enter_context(mock.patch.object(psi, 'fetch', self.fetch))
+        stack.enter_context(mock.patch.object(psi, 'measure', measure))
+        stack.enter_context(mock.patch.object(psi, 'time', types.SimpleNamespace(
+            monotonic=lambda: 0.0, sleep=lambda _s: None)))
+        stack.enter_context(mock.patch.object(crux, 'record', self.record))
+        stack.enter_context(mock.patch.object(mcp, 'time', types.SimpleNamespace(
+            time=time.time, monotonic=time.monotonic, sleep=time.sleep,
+            strftime=lambda fmt, *_: self.FIXED[fmt])))
+        return self
+
+    def __exit__(self, *exc):
+        return self._stack.__exit__(*exc)
+
+
+class AnalysePage(unittest.TestCase):
+    """check_pagespeed, diagnose_page and report each ran the same collection
+    and kept a different part of it, so asking for all three measured three
+    times. analyse_page measures once. An include that names one of the old
+    tools must return exactly what that tool returned, and refuse what it
+    refused, held against the 1.5.2 copies above."""
+
+    A, B = 'https://a.test/', 'https://b.test/'
+
+    def setUp(self):
+        mcp._JOBS.clear()
+
+    def tearDown(self):
+        mcp._JOBS.clear()
+
+    def _pair(self, google, old, args, include):
+        """The old tool and analyse_page on the same request and the same data."""
+        google.reset()
+        before = old(dict(args))
+        old_calls = (list(google.psi_calls), list(google.crux_calls))
+        google.reset()
+        new_args = dict(args)
+        if include is not None:
+            new_args['include'] = include
+        after = mcp.tool_analyse_page(new_args)
+        return before, after, old_calls, (list(google.psi_calls), list(google.crux_calls))
+
+    def _same(self, old, include, cases):
+        with _FakeGoogle() as google:
+            for args in cases:
+                with self.subTest(args=args):
+                    before, after, old_calls, new_calls = self._pair(google, old, args, include)
+                    self.assertTrue(before and after)
+                    self.assertEqual(after, before)
+                    self.assertEqual(new_calls, old_calls)
+
+    def test_scores_alone_is_what_check_pagespeed_returned(self):
+        self._same(_v1_check_pagespeed, ['scores'], (
+            {'urls': [self.A]},
+            {'urls': [self.A, self.B], 'strategy': 'both', 'runs': 2},
+            {'urls': [self.A], 'strategy': 'desktop', 'runs': 1}))
+
+    def test_issues_alone_is_what_diagnose_page_returned(self):
+        self._same(_v1_diagnose_page, ['issues'], (
+            {'urls': [self.A, self.B]},
+            {'urls': [self.B], 'runs': 4}))
+
+    def test_the_default_is_what_report_returned(self):
+        cases = ({'urls': [self.A, self.B]}, {'urls': [self.A], 'html': False})
+        self._same(_v1_report, None, cases)
+        self._same(_v1_report, ['scores', 'issues', 'field_data', 'html'], cases)
+
+    def test_the_default_saves_the_file_report_saved(self):
+        with _FakeGoogle() as google:
+            old_dir, new_dir = (os.path.join(google.tmp, d) for d in ('old', 'new'))
+            os.mkdir(old_dir)
+            os.mkdir(new_dir)
+            google.reset()
+            before = _v1_report({'urls': [self.A], 'directory': old_dir, 'filename': 'r.html'})
+            google.reset()
+            after = mcp.tool_analyse_page({'urls': [self.A], 'directory': new_dir,
+                                           'filename': 'r.html'})
+            moved = json.dumps(after).replace(new_dir, old_dir)
+            self.assertEqual(moved, json.dumps(before))
+            self.assertIn('Report written to', after[0]['text'])
+            with open(os.path.join(old_dir, 'r.html'), encoding='utf-8') as f_old, \
+                    open(os.path.join(new_dir, 'r.html'), encoding='utf-8') as f_new:
+                self.assertEqual(f_new.read(), f_old.read())
+
+    def test_what_the_old_tools_refused_is_still_refused_first(self):
+        """Every refusal the three had, before a single PageSpeed call."""
+        missing = os.path.join(tempfile.gettempdir(), 'pagespeed-no-such-folder')
+        bad = {
+            (_v1_check_pagespeed, ('scores',)): [
+                {'runs': r} for r in (0, 11, True, 2.5, 'five')] + [
+                {'strategy': 'tablet'}, {'urls': ['file:///etc/passwd']},
+                {'urls': [f'https://{i}.example/' for i in range(7)]},
+                {'urls': [self.A, self.B], 'strategy': 'both', 'runs': 10}],
+            (_v1_diagnose_page, ('issues',)): [
+                {'runs': r} for r in (1, 11, True, 2.5)] + [
+                {'urls': ['file:///etc/passwd']}],
+            (_v1_report, None): [
+                {'runs': r} for r in (1, 11, True, 2.5)] + [
+                {'urls': ['file:///etc/passwd']}, {'directory': missing},
+                {'filename': '../escape.html'}],
+        }
+        with _FakeGoogle() as google:
+            for (old, include), cases in bad.items():
+                for extra in cases:
+                    args = dict({'urls': [self.A]}, **extra)
+                    with self.subTest(tool=old.__name__, args=args):
+                        google.reset()
+                        with self.assertRaises(mcp.ToolError) as was:
+                            old(dict(args))
+                        if include is not None:
+                            args['include'] = list(include)
+                        with self.assertRaises(mcp.ToolError) as now:
+                            mcp.tool_analyse_page(args)
+                        # report said less than diagnose_page about runs, and
+                        # the merged tool gives diagnose_page's fuller reason.
+                        self.assertTrue(str(now.exception).startswith(
+                            str(was.exception).rstrip('.')),
+                            (str(now.exception), str(was.exception)))
+                        self.assertEqual(google.psi_calls, [])
+
+    def test_one_measurement_serves_every_part(self):
+        parts = ('scores', 'issues', 'field_data', 'html')
+        with _FakeGoogle() as google:
+            for size in range(1, 5):
+                for include in itertools.combinations(parts, size):
+                    with self.subTest(include=include):
+                        google.reset()
+                        mcp.tool_analyse_page({'urls': [self.A, self.B], 'runs': 3,
+                                               'include': list(include)})
+                        measured = set(include) & {'scores', 'issues', 'html'}
+                        self.assertEqual(len(google.psi_calls), 2 * 3 if measured else 0)
+                        wants_field = set(include) & {'field_data', 'html'}
+                        self.assertEqual(google.crux_calls,
+                                         [self.A, self.B] if wants_field else [])
+            # The same answer through the three old tools cost three measurements.
+            google.reset()
+            for old in (_v1_check_pagespeed, _v1_diagnose_page, _v1_report):
+                old({'urls': [self.A, self.B], 'runs': 3})
+            self.assertEqual(len(google.psi_calls), 3 * 2 * 3)
+
+    def test_field_data_alone_answers_in_the_call_without_measuring(self):
+        with _FakeGoogle(inline_budget='45') as google:
+            blocks = mcp.tool_analyse_page({'urls': [self.A, self.B],
+                                            'include': ['field_data']})
+            self.assertEqual(google.psi_calls, [])
+            self.assertNotIn('Started job', blocks[0]['text'])
+            self.assertIn('[real users, 28-day p75', blocks[0]['text'])
+            self.assertEqual(set(json.loads(blocks[-1]['text'])), {'checked_at', 'field'})
+
+    def test_invalid_include_values_are_refused_before_measuring(self):
+        with _FakeGoogle() as google:
+            for bad in ('scores', [], ['score'], ['scores', 'everything'], [None],
+                        [1], {'scores': True}, ['HTML'], 5):
+                with self.subTest(include=bad):
+                    with self.assertRaises(mcp.ToolError) as caught:
+                        mcp.tool_analyse_page({'urls': [self.A], 'include': bad})
+                    self.assertIn('include must be', str(caught.exception))
+            self.assertEqual((google.psi_calls, google.crux_calls), ([], []))
+            sent = []
+            with mock.patch.object(mcp, '_send', sent.append):
+                mcp.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                            'params': {'name': 'analyse_page',
+                                       'arguments': {'urls': [self.A],
+                                                     'include': ['speed']}}})
+            self.assertTrue(sent[0]['result']['isError'])
+            self.assertEqual(mcp._JOBS, {})
+
+    def test_combinations_no_old_tool_offered_are_refused_when_they_would_mislead(self):
+        with _FakeGoogle() as google:
+            for args in ({'strategy': 'desktop'}, {'strategy': 'both'},
+                         {'strategy': 'desktop', 'include': ['issues']},
+                         {'strategy': 'desktop', 'include': ['scores', 'html']},
+                         {'include': ['scores'], 'directory': google.tmp},
+                         {'include': ['scores', 'issues'], 'runs': 1}):
+                with self.subTest(args=args):
+                    with self.assertRaises(mcp.ToolError):
+                        mcp.tool_analyse_page(dict(args, urls=[self.A]))
+            self.assertEqual(google.psi_calls, [])
+
+    def test_the_job_flow_returns_the_report_through_check_status(self):
+        """Three analyses do not fit inside one call, so this is a job, and
+        collecting it gives exactly what report gave inline."""
+        with _FakeGoogle(inline_budget='45') as google:
+            receipt = mcp.tool_analyse_page({'urls': [self.A]})
+            text = receipt[0]['text']
+            self.assertIn('https://a.test/ [mobile], scores, field data and findings '
+                          'over 3 distinct analyses', text)
+            self.assertIn('check_status', text)
+            job_id = re.search(r'Started job (\w+)', text).group(1)
+            deadline = time.monotonic() + 10
+            while True:
+                answer = mcp.tool_check_status({'job_id': job_id})
+                if not answer[0]['text'].startswith(f'Job {job_id}: running'):
+                    break
+                self.assertLess(time.monotonic(), deadline, 'the job never finished')
+                time.sleep(0.01)
+            self.assertEqual(len(google.psi_calls), 3)
+            self.assertEqual(google.crux_calls, [self.A])
+            google.reset()
+            with mock.patch.dict(os.environ, {'PAGESPEED_INLINE_BUDGET': '100000'}):
+                inline = _v1_report({'urls': [self.A]})
+            self.assertEqual(answer, inline)
 
 
 if __name__ == '__main__':
