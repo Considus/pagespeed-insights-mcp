@@ -2900,9 +2900,16 @@ class AnalysePage(unittest.TestCase):
             google.reset()
             after = mcp.tool_analyse_page({'urls': [self.A], 'directory': new_dir,
                                            'filename': 'r.html'})
-            # The path also appears JSON-escaped, once in the reply and twice
-            # in its embedded payload, so on Windows each backslash is doubled.
-            moved, new, old = json.dumps(after), new_dir, old_dir
+            # Swap the path each tool reported, which can be spelled unlike the
+            # folder passed in (it is resolved), after checking both name the
+            # file asked for. It also appears JSON-escaped, once in the reply
+            # and twice in its embedded payload.
+            def reported(reply):
+                return re.search(r'Report written to (.+?) \(', reply[0]['text']).group(1)
+            new, old = reported(after), reported(before)
+            self.assertTrue(os.path.samefile(new, os.path.join(new_dir, 'r.html')))
+            self.assertTrue(os.path.samefile(old, os.path.join(old_dir, 'r.html')))
+            moved = json.dumps(after)
             for _ in range(3):
                 moved = moved.replace(new, old)
                 new, old = (json.dumps(d)[1:-1] for d in (new, old))
