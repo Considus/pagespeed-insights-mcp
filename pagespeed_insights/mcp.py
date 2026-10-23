@@ -897,8 +897,8 @@ TOOLS = [
             'their spread, failing audits ranked by what fixing them is worth, '
             'real-user data beside them, and a page to send on); for real-user '
             'data alone use get_field_data, which is fast, and for "did that change '
-            'help" use compare_to_baseline. include picks the parts, "scores", "issues", '
-            '"field_data" and "html", default all four. ONE MEASUREMENT SERVES '
+            'help" use compare_to_baseline. include picks the parts, "scores", '
+            '"issues", "field_data" and "html", default all four. ONE MEASUREMENT SERVES '
             'EVERY PART, so asking for more costs no extra API calls, while '
             'asking in separate calls measures again. SLOW, several minutes. It '
             'reports the MEDIAN of several DISTINCT analyses with the min-max '
@@ -915,7 +915,8 @@ TOOLS = [
             'collect it with get_job_result, polling about every 15 seconds. Only '
             'runs=1 on a single URL with include ["scores"] answers immediately, '
             'and runs=1 is the noisy single run you should not be quoting. '
-            'ISSUES are Google\'s own audit findings and remediation text. Only a '
+            'ISSUES are what is FAILING on the page, from Google\'s own audit '
+            'findings and remediation text. Only a '
             'fault that failed in EVERY distinct analysis is reported, because '
             'audits are as noisy as scores and a one-off failure is the '
             'instrument moving rather than a fact about the page. Estimated '
@@ -984,9 +985,12 @@ TOOLS = [
     {
         'name': 'get_field_data',
         'description':
-            'What real Chrome users actually experienced, from the Chrome UX '
-            'Report — the only evidence here about real visitors, and the only '
-            'thing Google ranks on. Set history for the weekly p75 time series, '
+            'Use for what real Chrome users actually experienced, with no lab '
+            'measurement, so it answers in seconds rather than minutes; for lab '
+            'scores and what to fix use analyse_page, and for which phase owns '
+            'a slow LCP use explain_lcp. From the Chrome UX Report, the only '
+            'evidence here about real visitors and the only thing Google ranks '
+            'on. Set history for the weekly p75 time series, '
             'which shows whether a site has been getting slower for real people '
             'over months. Many sites have NO field data because they lack the '
             'traffic to clear Google\'s anonymity threshold; that is reported '
@@ -1006,11 +1010,12 @@ TOOLS = [
     {
         'name': 'explain_lcp',
         'description':
-            'Break a slow Largest Contentful Paint into the four phases it is '
-            'made of: server response, then the delay before the browser starts '
-            'fetching the largest image, then the download, then the delay '
-            'before it is painted. Turns one number into which part of the load '
-            'owns it. FAST, one Chrome UX Report call, no Lighthouse runs and '
+            'Use when Largest Contentful Paint is the problem, to find which part '
+            'of the load owns it; for the LCP figure alone use get_field_data, '
+            'and for lab scores and what to fix use analyse_page. Breaks a slow '
+            'LCP into the four phases it is made of: server response, then the '
+            'delay before the browser starts fetching the largest image, then '
+            'the download, then the delay before it is painted. FAST, one Chrome UX Report call, no Lighthouse runs and '
             'no noise to average away. TWO THINGS NOT TO GET WRONG, both '
             'reported in the output: the phases are each a separate 75th '
             'percentile so they do NOT sum to the LCP (measured gaps range from '
@@ -1033,7 +1038,9 @@ TOOLS = [
     {
         'name': 'compare_to_baseline',
         'description':
-            'Answer "did that change actually help". Measures now and compares '
+            'Use to answer "did that change actually help"; for a one-off '
+            'measurement with nothing to compare against use analyse_page. '
+            'Measures now and compares '
             'against a saved baseline for the same URL and strategy. THE FIRST '
             'CALL ON A URL RECORDS THE BASELINE and compares nothing, which is '
             'the correct answer before anything has changed; make the change, '
@@ -1072,13 +1079,13 @@ TOOLS = [
     {
         'name': 'get_job_result',
         'description':
-            'Collect a measurement that was handed back as a job. Anything '
-            'longer than about a minute cannot be answered inside one tool '
-            'call — clients enforce a hard wall-clock limit and progress '
-            'notifications do not extend it — so analyse_page and '
-            'compare_to_baseline return a job id and keep working. Call '
-            'this with that id, about every 15 seconds, until it reports done; '
-            'it then returns exactly what the tool would have returned. '
+            'Use to collect a measurement that analyse_page or '
+            'compare_to_baseline handed back as a job id, calling it about '
+            'every 15 seconds until it reports done. Anything longer than about '
+            'a minute cannot be answered inside one tool call (clients enforce '
+            'a hard wall-clock limit and progress notifications do not extend '
+            'it), so those tools return a job id and keep working. When done it '
+            'returns exactly what the tool would have returned. '
             'ALWAYS answers immediately. Omit job_id for the most recent job. '
             'Do not start the same measurement again while one is running: it '
             'will not arrive any sooner, because the wait is Google '
@@ -1098,10 +1105,11 @@ TOOLS = [
     {
         'name': 'check_setup',
         'description':
-            'Report what is configured and what actually works right now — key '
-            'present, PageSpeed reachable, Chrome UX Report permitted — without '
-            'disclosing the key. Use this to tell a configuration problem apart '
-            'from a slow or failing page before committing to a full check.',
+            'Use first when anything looks wrong, to tell a configuration '
+            'problem apart from a slow or failing page before committing to a '
+            'full check. Reports what is configured and what actually works '
+            'right now (key present, PageSpeed reachable, Chrome UX Report '
+            'permitted) without disclosing the key.',
         'inputSchema': {'type': 'object', 'properties': {},
                         'additionalProperties': False},
         'handler': tool_check_setup,
