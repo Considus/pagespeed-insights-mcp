@@ -2029,8 +2029,8 @@ class Annotations(unittest.TestCase):
 
     def test_compare_to_baseline_replaces_the_baseline_so_it_is_destructive(self):
         # save_baseline replaces the stored baseline in place and the old one
-        # is gone, unlike report, which picks a free name. Same tool-not-the-
-        # call reading as report's file write. Not idempotent either: every
+        # is gone, unlike analyse_page, which picks a free name. Same tool-not-
+        # the-call reading as analyse_page's file write. Not idempotent either: every
         # call measures afresh, so the snapshot it writes differs each time.
         ann = self.mcp._annotations('compare_to_baseline')
         self.assertTrue(ann['destructiveHint'])

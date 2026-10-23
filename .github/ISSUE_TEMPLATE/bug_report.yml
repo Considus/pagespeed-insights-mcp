@@ -5,12 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, please run `diagnose` (the MCP tool) or
+        Before filing, please run `check_setup` (the MCP tool) or
         `python3 -m pagespeed_insights --runs 1 <a url>` and paste what it says.
         It reports whether the key works and whether the Chrome UX Report is
         reachable, which separates a configuration problem from a real bug.
 
-        **Never paste your API key.** `diagnose` deliberately does not print it.
+        **Never paste your API key.** `check_setup` deliberately does not print it.
 
   - type: textarea
     id: what-happened
@@ -27,7 +27,7 @@ body:
   - type: textarea
     id: diagnose
     attributes:
-      label: Output of `diagnose`
+      label: Output of `check_setup`
       render: text
     validations:
       required: false

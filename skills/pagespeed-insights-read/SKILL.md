@@ -31,8 +31,9 @@ So:
   they overlap. If they overlap, the honest answer is "no measurable change",
   not a hedged yes.
 
-Use `compare` rather than doing this arithmetic yourself. It holds the baseline,
-applies the overlap rule, and will refuse a verdict where you might not.
+Use `compare_to_baseline` rather than doing this arithmetic yourself. It holds
+the baseline, applies the overlap rule, and will refuse a verdict where you
+might not.
 
 ## Never add savings together
 
@@ -131,10 +132,10 @@ saying otherwise sets up a failure the reader will discover later.
 
 ## Which tool to call
 
-- **`report`** for "how is my site" or "what should I fix". Everything in one
-  call, and it can save a self-contained HTML page. Offer that, because the
-  findings frequently belong to somebody else and a page they can forward beats
-  a number they cannot act on alone.
+- **`analyse_page`** for "how is my site" or "what should I fix". By default
+  everything in one call, and it can save a self-contained HTML page. Offer
+  that, because the findings frequently belong to somebody else and a page they
+  can forward beats a number they cannot act on alone.
   - **Ask where they want the file, and ask before starting the run.** The
     measurement takes minutes and a folder that does not exist is refused up
     front, so asking afterwards wastes the wait.
@@ -144,20 +145,23 @@ saying otherwise sets up a failure the reader will discover later.
     full path comes back for you to pass on.
   - Do not paste the HTML into the conversation when it has been saved. Give
     them the path.
-- **`diagnose_page`** when the scores are already known and only the faults are
-  wanted.
-- **`check_pagespeed`** for scores alone.
-- **`field_data`** for real users only, with `history` for six months of weekly
-  figures.
+- **`analyse_page` with `include`** to narrow it: `["issues"]` when the scores
+  are already known and only the faults are wanted, `["scores"]` for scores
+  alone. Ask for every part you want in one call. One measurement serves them
+  all, and a second call measures again.
+- **`get_field_data`** for real users only, with `history` for six months of
+  weekly figures.
 - **`explain_lcp`** when LCP specifically is the problem. It is the one fast
   tool here, one call and no Lighthouse runs, so reach for it before committing
   someone to a multi-minute check. It needs an API key and real-user data.
-- **`compare`** for "did that help". Call it BEFORE the user makes a change as
-  well as after: the first call records the baseline and there is no way to
-  reconstruct one afterwards. If they have already made the change and no
-  baseline exists, say so plainly rather than measuring once and guessing.
-- **`check_status`** to collect anything that came back as a job id. See below.
-- **`diagnose`** when anything looks wrong. It separates a configuration
+- **`compare_to_baseline`** for "did that help". Call it BEFORE the user makes
+  a change as well as after: the first call records the baseline and there is
+  no way to reconstruct one afterwards. If they have already made the change
+  and no baseline exists, say so plainly rather than measuring once and
+  guessing.
+- **`get_job_result`** to collect anything that came back as a job id. See
+  below.
+- **`check_setup`** when anything looks wrong. It separates a configuration
   problem from a slow page in about two seconds.
 
 These take minutes, not seconds, because Google only re-analyses a page about
@@ -168,10 +172,10 @@ the same thing.
 
 ## A job id is not the answer, it is a receipt
 
-`check_pagespeed`, `report`, `diagnose_page` and `compare` return a job id
-rather than a result whenever the work will not fit inside one tool call, which
-is almost always. Collect it with `check_status`, passing the id, about every
-fifteen seconds until it reports done. `check_status` returns immediately every
+`analyse_page` and `compare_to_baseline` return a job id rather than a result
+whenever the work will not fit inside one tool call, which is almost always.
+Collect it with `get_job_result`, passing the id, about every fifteen seconds
+until it reports done. `get_job_result` returns immediately every
 time, and when the measurement finishes it returns exactly what the tool would
 have returned.
 
@@ -184,7 +188,7 @@ have returned.
   and is the single noisy analysis this whole server exists to refuse. Quoting
   it while the real measurement is still collecting is the exact failure the
   spread is there to prevent.
-- If `check_status` says the job is lost, the server was restarted while it
+- If `get_job_result` says the job is lost, the server was restarted while it
   ran. Say so and start it again, rather than quietly measuring once instead.
 
 ## Fewer analyses than asked for is the headline, not a footnote
