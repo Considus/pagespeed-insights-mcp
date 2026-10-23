@@ -2157,6 +2157,26 @@ class Manifest(unittest.TestCase):
         self.assertIn('assets', build.INCLUDE_TREES)
         self.assertIn('pagespeed_insights', build.INCLUDE_TREES)
 
+    def test_bytecode_caches_are_pruned_from_the_bundle(self):
+        # Running the tests leaves __pycache__ folders in the package, and the
+        # build copies the package tree as it finds it.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_build_mcpb', self.root / 'build-mcpb.py')
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        with tempfile.TemporaryDirectory() as stage:
+            pkg = pathlib.Path(stage) / 'pagespeed_insights'
+            (pkg / '__pycache__').mkdir(parents=True)
+            (pkg / '__pycache__' / 'mcp.cpython-312.pyc').write_bytes(b'')
+            (pkg / 'mcp.py').write_text('')
+            (pkg / 'stray.pyc').write_bytes(b'')
+            build._prune(stage)
+            left = sorted(p.relative_to(stage).as_posix()
+                          for p in pathlib.Path(stage).rglob('*'))
+        self.assertEqual(left, ['pagespeed_insights',
+                                'pagespeed_insights/mcp.py'])
+
 
 @unittest.skipIf(os.name == 'nt', 'POSIX ownership and symlinks')
 class TheConfigFolderMustBeYours(unittest.TestCase):
