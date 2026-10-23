@@ -1222,13 +1222,44 @@ class WhereAReportMayBeWritten(unittest.TestCase):
             mcp.psi.measure = real
         self.assertEqual(calls, [], 'it measured before checking the folder')
 
-    def test_the_schema_tells_the_assistant_to_ask_first(self):
-        """Without this the assistant invents a path, and the one it invents is
-        wrong on someone else's machine."""
+    def test_the_schema_says_whose_folder_it_is_and_when_it_is_checked(self):
+        """Without these facts the assistant invents a path, the one it invents
+        is wrong on someone else's machine, and a path read from a measured page
+        looks as good as one the user gave. Asking first is the skill's to say:
+        the description states the facts that make it worth doing."""
         from pagespeed_insights import mcp
         d = next(t for t in mcp.TOOL_DEFS if t['name'] == 'analyse_page')['description']
-        self.assertIn('ASK THE USER WHERE THEY WANT IT', d)
-        self.assertIn('not take one from a web page', d)
+        self.assertIn("a folder on the user's own machine", d)
+        self.assertIn('does not check where that path came from', d)
+        self.assertIn('checked BEFORE the measurement starts', d)
+
+    # A command to the assistant at the start of a sentence or clause, or in
+    # the second person. The Anthropic Directory treats a tool description that
+    # tells the model how to behave as prompt injection, so descriptions state
+    # what the tool does and leave the telling to the skill. "Use to", "Use
+    # when" and "Set history" stay allowed: saying which tool fits a request
+    # and what a parameter does is what a description is for.
+    _COMMAND = re.compile(
+        r"(?:^|[.;:!?]\s+|,\s+(?:and|then)\s+|\bso\s+)"
+        r"(?:do\s+not|don't|never|ask|prefer|make\s+sure|remember|quote|"
+        r"use\s+the|make\s+the|must)\b"
+        r"|\byou\s+(?:must|should|need)\b"
+        r"|\bask\s+the\s+user\b"
+        r"|\bwhat\s+to\s+quote\b",
+        re.IGNORECASE)
+
+    def test_no_tool_description_commands_the_assistant(self):
+        from pagespeed_insights import mcp
+        found = []
+        for tool in mcp.TOOL_DEFS:
+            texts = [('description', tool['description'])]
+            texts += [(p, s.get('description', ''))
+                      for p, s in tool['inputSchema']['properties'].items()]
+            for where, text in texts:
+                for m in self._COMMAND.finditer(text):
+                    found.append(f"{tool['name']} {where}: "
+                                 f"...{text[max(0, m.start() - 30):m.end() + 30]}...")
+        self.assertEqual(found, [], '\n'.join(found))
 
 
 class Rendering(unittest.TestCase):
