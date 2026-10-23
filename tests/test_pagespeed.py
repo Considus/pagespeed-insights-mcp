@@ -2900,7 +2900,12 @@ class AnalysePage(unittest.TestCase):
             google.reset()
             after = mcp.tool_analyse_page({'urls': [self.A], 'directory': new_dir,
                                            'filename': 'r.html'})
-            moved = json.dumps(after).replace(new_dir, old_dir)
+            # The path also appears JSON-escaped, once in the reply and twice
+            # in its embedded payload, so on Windows each backslash is doubled.
+            moved, new, old = json.dumps(after), new_dir, old_dir
+            for _ in range(3):
+                moved = moved.replace(new, old)
+                new, old = (json.dumps(d)[1:-1] for d in (new, old))
             self.assertEqual(moved, json.dumps(before))
             self.assertIn('Report written to', after[0]['text'])
             with open(os.path.join(old_dir, 'r.html'), encoding='utf-8') as f_old, \
