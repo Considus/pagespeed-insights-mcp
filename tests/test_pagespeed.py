@@ -2943,6 +2943,29 @@ class AnalysePage(unittest.TestCase):
                             (str(now.exception), str(was.exception)))
                         self.assertEqual(google.psi_calls, [])
 
+    def test_the_time_limit_is_check_pagespeeds_alone(self):
+        """check_pagespeed refused a request that could run past the limit.
+        report and diagnose_page never did, so asking for issues or the page
+        is not refused for its size, as before."""
+        big = {'urls': [f'https://{i}.example/' for i in range(6)], 'runs': 3}
+        with _FakeGoogle() as google:
+            for include in (['scores'], ['scores', 'field_data']):
+                with self.subTest(include=include):
+                    google.reset()
+                    with self.assertRaises(mcp.ToolError) as cm:
+                        mcp.tool_analyse_page(dict(big, include=include))
+                    self.assertIn("this server's limit", str(cm.exception))
+                    self.assertEqual(google.psi_calls, [])
+            for include in (None, ['issues'], ['html'], ['scores', 'issues']):
+                with self.subTest(include=include):
+                    args = dict(big)
+                    if include is not None:
+                        args['include'] = include
+                    try:
+                        mcp.tool_analyse_page(args)
+                    except mcp.ToolError as e:
+                        self.assertNotIn("this server's limit", str(e))
+
     def test_one_measurement_serves_every_part(self):
         parts = ('scores', 'issues', 'field_data', 'html')
         with _FakeGoogle() as google:

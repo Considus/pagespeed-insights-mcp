@@ -488,9 +488,10 @@ def tool_analyse_page(args, progress=None):
 
     # Each URL and strategy collects independently, and each can take up to its
     # own budget. Refuse up front rather than start something the client will
-    # abandon halfway through.
+    # abandon halfway through. Only for scores without findings, the request
+    # check_pagespeed made: report and diagnose_page never had this limit.
     jobs = len(urls) * len(strategies)
-    if measuring:
+    if measuring and not findings_wanted:
         budget = max(psi.MIN_BUDGET, runs * psi.BUDGET_PER_ANALYSIS)
         worst_case = jobs * budget
         if worst_case > MAX_SECONDS:
