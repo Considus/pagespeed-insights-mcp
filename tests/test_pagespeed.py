@@ -1512,8 +1512,8 @@ class McpProtocol(unittest.TestCase):
         out = self._call({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
         tools = out[0]['result']['tools']
         self.assertEqual({t['name'] for t in tools},
-                         {'analyse_page', 'field_data', 'explain_lcp', 'compare',
-                          'check_status', 'diagnose'})
+                         {'analyse_page', 'compare_to_baseline', 'explain_lcp',
+                          'get_field_data', 'get_job_result', 'check_setup'})
         for tool in tools:
             self.assertEqual(tool['inputSchema']['type'], 'object')
             self.assertTrue(tool['description'])
@@ -1827,7 +1827,7 @@ class SetupIdleTimerNeedsTheToken(unittest.TestCase):
         self.assertGreater(setup._last_seen, 1000.0)
 
 
-class CompareSaveBaselineIsABoolean(unittest.TestCase):
+class CompareToBaselineSaveBaselineIsABoolean(unittest.TestCase):
     """save_baseline replaces a stored baseline that cannot be measured again.
     Only a real true may do that. The string "false" is truthy in Python, so a
     client that sends it must be refused, not obeyed backwards."""
@@ -1852,7 +1852,7 @@ class CompareSaveBaselineIsABoolean(unittest.TestCase):
             for value in ('false', 'False', 'no', '0', 'true', 0, 1, [], {}):
                 with self.subTest(value=value):
                     with self.assertRaises(mcp.ToolError) as caught:
-                        mcp.tool_compare({'urls': ['https://example.test/'],
+                        mcp.tool_compare_to_baseline({'urls': ['https://example.test/'],
                                           'save_baseline': value})
                     self.assertIn('save_baseline', str(caught.exception))
         finally:
@@ -1860,8 +1860,8 @@ class CompareSaveBaselineIsABoolean(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
-class CheckStatusReadsOnlyItsOwnJobs(unittest.TestCase):
-    """check_status takes a job id from the model, which a measured page can
+class GetJobResultReadsOnlyItsOwnJobs(unittest.TestCase):
+    """get_job_result takes a job id from the model, which a measured page can
     steer. It must open nothing but this server's own job files."""
 
     def setUp(self):
@@ -1886,14 +1886,14 @@ class CheckStatusReadsOnlyItsOwnJobs(unittest.TestCase):
                        'DEADBEEF', 'deadbeef0', 'not-hex!'):
             with self.subTest(job_id=job_id):
                 with self.assertRaises(mcp.ToolError) as caught:
-                    mcp.tool_check_status({'job_id': job_id})
+                    mcp.tool_get_job_result({'job_id': job_id})
                 self.assertIn('No job', str(caught.exception))
 
     def test_a_real_job_id_still_answers(self):
         from pagespeed_insights import mcp
         mcp._job_write({'id': 'a1b2c3d4', 'status': 'done', 'started': time.time(),
                         'content': [{'type': 'text', 'text': 'MINE'}]})
-        self.assertEqual(mcp.tool_check_status({'job_id': 'a1b2c3d4'}),
+        self.assertEqual(mcp.tool_get_job_result({'job_id': 'a1b2c3d4'}),
                          [{'type': 'text', 'text': 'MINE'}])
 
 
@@ -2018,21 +2018,21 @@ class Annotations(unittest.TestCase):
         self.assertFalse(ann['destructiveHint'])
         self.assertFalse(ann['idempotentHint'])
 
-    def test_compare_is_not_read_only_because_it_records_a_baseline(self):
+    def test_compare_to_baseline_is_not_read_only_because_it_records_a_baseline(self):
         # The first call on a URL writes the baseline to disk, and the
         # description says so. Until 1.4.3 the annotation said readOnlyHint
         # true anyway, which told a client it could run this without asking
         # while it wrote state.
-        ann = self.mcp._annotations('compare')
+        ann = self.mcp._annotations('compare_to_baseline')
         self.assertFalse(ann['readOnlyHint'])
         self.assertIn('destructiveHint', ann)
 
-    def test_compare_replaces_the_baseline_so_it_is_destructive(self):
+    def test_compare_to_baseline_replaces_the_baseline_so_it_is_destructive(self):
         # save_baseline replaces the stored baseline in place and the old one
         # is gone, unlike report, which picks a free name. Same tool-not-the-
         # call reading as report's file write. Not idempotent either: every
         # call measures afresh, so the snapshot it writes differs each time.
-        ann = self.mcp._annotations('compare')
+        ann = self.mcp._annotations('compare_to_baseline')
         self.assertTrue(ann['destructiveHint'])
         self.assertFalse(ann['idempotentHint'])
 
@@ -2071,11 +2071,11 @@ class AnnotationsOverStdio(unittest.TestCase):
 
     def test_the_hints_that_arrive_are_the_ones_declared(self):
         by_name = {t['name']: t for t in self._tools_list()}
-        self.assertTrue(by_name['field_data']['annotations']['readOnlyHint'])
+        self.assertTrue(by_name['get_field_data']['annotations']['readOnlyHint'])
         self.assertFalse(by_name['analyse_page']['annotations']['readOnlyHint'])
         self.assertFalse(by_name['analyse_page']['annotations']['destructiveHint'])
-        self.assertFalse(by_name['compare']['annotations']['readOnlyHint'])
-        self.assertTrue(by_name['compare']['annotations']['destructiveHint'])
+        self.assertFalse(by_name['compare_to_baseline']['annotations']['readOnlyHint'])
+        self.assertTrue(by_name['compare_to_baseline']['annotations']['destructiveHint'])
 
 
 class Manifest(unittest.TestCase):
@@ -2277,7 +2277,7 @@ class FinishedJobsExpireOnTime(unittest.TestCase):
             with self.subTest(args=args):
                 self._finished(old, 2 * 3600)
                 with self.assertRaises(self.mcp.ToolError) as caught:
-                    self.mcp.tool_check_status(args)
+                    self.mcp.tool_get_job_result(args)
                 self.assertIn(says, str(caught.exception))
                 self.assertFalse(self.mcp._job_path(old).exists())
 
@@ -2286,12 +2286,12 @@ class FinishedJobsExpireOnTime(unittest.TestCase):
         self.mcp._job_write({'id': 'dead0001', 'status': 'running', 'started': at,
                              'updated': at, 'finished': None, 'label': 'x'})
         with self.assertRaises(self.mcp.ToolError):
-            self.mcp.tool_check_status({'job_id': 'dead0001'})
+            self.mcp.tool_get_job_result({'job_id': 'dead0001'})
         self.assertFalse(self.mcp._job_path('dead0001').exists())
 
     def test_a_job_inside_its_hour_still_answers(self):
         self._finished('a1b2c3d4', 600)
-        self.assertEqual(self.mcp.tool_check_status({'job_id': 'a1b2c3d4'}),
+        self.assertEqual(self.mcp.tool_get_job_result({'job_id': 'a1b2c3d4'}),
                          [{'type': 'text', 'text': 'a1b2c3d4'}])
 
 
@@ -2356,10 +2356,10 @@ class JobsOutliveTheCall(unittest.TestCase):
         blocks = self.mcp._run_or_defer(
             'analyse_page', 'five analyses', 252,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
-        self.assertIn('check_status', blocks[0]['text'])
+        self.assertIn('get_job_result', blocks[0]['text'])
         job_id = self._job_id(blocks)
         self._wait_for(job_id, 'done')
-        collected = self.mcp.tool_check_status({'job_id': job_id})
+        collected = self.mcp.tool_get_job_result({'job_id': job_id})
         self.assertEqual(collected, [{'type': 'text', 'text': 'the report'}])
 
     def test_the_collected_answer_is_what_the_inline_path_would_have_given(self):
@@ -2373,7 +2373,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         deferred = self.mcp._run_or_defer('analyse_page', 'x', 999, work, None)
         job_id = self._job_id(deferred)
         self._wait_for(job_id, 'done')
-        self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}), inline)
+        self.assertEqual(self.mcp.tool_get_job_result({'job_id': job_id}), inline)
 
     def test_a_poll_answers_at_once_while_the_work_is_still_running(self):
         """The whole point. A poll that could block has reinvented the
@@ -2388,7 +2388,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         job_id = self._job_id(blocks)
         try:
             started = time.monotonic()
-            answer = self.mcp.tool_check_status({'job_id': job_id})
+            answer = self.mcp.tool_get_job_result({'job_id': job_id})
             self.assertLess(time.monotonic() - started, 1.0)
             self.assertIn('running', answer[0]['text'])
         finally:
@@ -2408,7 +2408,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         try:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                text = self.mcp.tool_check_status({'job_id': job_id})[0]['text']
+                text = self.mcp.tool_get_job_result({'job_id': job_id})[0]['text']
                 if '2/5 distinct analyses' in text:
                     break
                 time.sleep(0.01)
@@ -2427,7 +2427,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         job_id = self._job_id(blocks)
         self._wait_for(job_id, 'failed')
         with self.assertRaises(self.mcp.ToolError) as caught:
-            self.mcp.tool_check_status({'job_id': job_id})
+            self.mcp.tool_get_job_result({'job_id': job_id})
         self.assertIn('the measurement broke', str(caught.exception))
 
     def test_a_job_is_findable_by_a_process_that_never_ran_it(self):
@@ -2440,7 +2440,7 @@ class JobsOutliveTheCall(unittest.TestCase):
         job_id = self._job_id(blocks)
         self._wait_for(job_id, 'done')
         self.mcp._JOBS.clear()                       # a different process
-        self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}),
+        self.assertEqual(self.mcp.tool_get_job_result({'job_id': job_id}),
                          [{'type': 'text', 'text': 'the report'}])
 
     def test_a_job_whose_worker_died_is_reported_lost(self):
@@ -2453,12 +2453,12 @@ class JobsOutliveTheCall(unittest.TestCase):
                   'total': 5, 'content': None, 'error': None, 'hint': ''}
         self.mcp._job_write(record)
         with self.assertRaises(self.mcp.ToolError) as caught:
-            self.mcp.tool_check_status({'job_id': 'deadbeef'})
+            self.mcp.tool_get_job_result({'job_id': 'deadbeef'})
         self.assertIn('lost', str(caught.exception))
 
     def test_an_unknown_job_says_so_rather_than_hanging(self):
         with self.assertRaises(self.mcp.ToolError):
-            self.mcp.tool_check_status({'job_id': 'nosuchjob'})
+            self.mcp.tool_get_job_result({'job_id': 'nosuchjob'})
 
     def test_the_most_recent_job_is_the_default(self):
         """Losing the id should not lose the measurement."""
@@ -2466,7 +2466,7 @@ class JobsOutliveTheCall(unittest.TestCase):
             'analyse_page', 'x', 999,
             lambda report: [{'type': 'text', 'text': 'the report'}], None)
         self._wait_for(self._job_id(blocks), 'done')
-        self.assertEqual(self.mcp.tool_check_status({}),
+        self.assertEqual(self.mcp.tool_get_job_result({}),
                          [{'type': 'text', 'text': 'the report'}])
 
     def test_more_jobs_than_the_server_will_run_are_refused(self):
@@ -2522,7 +2522,7 @@ class JobsOutliveTheCall(unittest.TestCase):
                 lambda report: [{'type': 'text', 'text': 'the report'}], None)
             job_id = self._job_id(blocks)
             self._wait_for(job_id, 'done')
-            self.assertEqual(self.mcp.tool_check_status({'job_id': job_id}),
+            self.assertEqual(self.mcp.tool_get_job_result({'job_id': job_id}),
                              [{'type': 'text', 'text': 'the report'}])
         finally:
             os.environ['PAGESPEED_CONFIG_DIR'] = self.tmp.name
@@ -3002,7 +3002,7 @@ class AnalysePage(unittest.TestCase):
                         mcp.tool_analyse_page(dict(args, urls=[self.A]))
             self.assertEqual(google.psi_calls, [])
 
-    def test_the_job_flow_returns_the_report_through_check_status(self):
+    def test_the_job_flow_returns_the_report_through_get_job_result(self):
         """Three analyses do not fit inside one call, so this is a job, and
         collecting it gives exactly what report gave inline."""
         with _FakeGoogle(inline_budget='45') as google:
@@ -3010,11 +3010,11 @@ class AnalysePage(unittest.TestCase):
             text = receipt[0]['text']
             self.assertIn('https://a.test/ [mobile], scores, field data and findings '
                           'over 3 distinct analyses', text)
-            self.assertIn('check_status', text)
+            self.assertIn('get_job_result', text)
             job_id = re.search(r'Started job (\w+)', text).group(1)
             deadline = time.monotonic() + 10
             while True:
-                answer = mcp.tool_check_status({'job_id': job_id})
+                answer = mcp.tool_get_job_result({'job_id': job_id})
                 if not answer[0]['text'].startswith(f'Job {job_id}: running'):
                     break
                 self.assertLess(time.monotonic(), deadline, 'the job never finished')

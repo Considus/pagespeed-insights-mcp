@@ -124,7 +124,7 @@ def _urls(raw):
 #
 # So work that will not fit does not happen inside the call. It starts a worker
 # and hands back a job id, every call returns in well under a second, and the
-# caller polls check_status. Nothing then depends on what the client's timeout
+# caller polls get_job_result. Nothing then depends on what the client's timeout
 # is, or on whether it honours progress at all.
 #
 # State goes to a file as well as memory because the job can outlive the
@@ -194,7 +194,7 @@ def _inline_budget():
     return value if value > 0 else INLINE_BUDGET
 
 
-# The ids _start_job hands out. check_status takes an id from the model, so
+# The ids _start_job hands out. get_job_result takes an id from the model, so
 # anything else is refused before it becomes part of a path.
 _JOB_ID = re.compile(r'[0-9a-f]{8}')
 _JOB_TEMP = re.compile(r'[0-9a-f]{8}\.json\..+\.tmp')
@@ -339,7 +339,7 @@ def _start_job(tool, label, estimate, work):
             raise ToolError(
                 f'{len(running)} measurements are already running and this '
                 f'server will not start more than {MAX_ACTIVE_JOBS} at once. '
-                'Collect one with check_status first. They are slow because '
+                'Collect one with get_job_result first. They are slow because '
                 'Google re-analyses a URL about once a minute, so starting '
                 'more of them at once does not finish any of them sooner.')
         job_id = uuid.uuid4().hex[:8]
@@ -404,10 +404,10 @@ def _start_job(tool, label, estimate, work):
              f'About {_duration(estimate)}. Google re-analyses a URL only about '
              'once a minute, so this is time rather than requests and asking '
              'harder will not speed it up.\n\n'
-             f'Collect it with check_status, job_id "{job_id}". Poll about every '
+             f'Collect it with get_job_result, job_id "{job_id}". Poll about every '
              '15 seconds until it reports done. The work carries on between '
              'polls. If this server is restarted while it runs the job is lost, '
-             'and check_status says so rather than returning nothing.'}]
+             'and get_job_result says so rather than returning nothing.'}]
 
 
 def _run_or_defer(tool, label, estimate, work, progress):
@@ -639,7 +639,7 @@ def tool_analyse_page(args, progress=None):
                          _job_estimate(jobs, runs), work, progress)
 
 
-def tool_field_data(args, progress=None):
+def tool_get_field_data(args, progress=None):
     urls = _urls(args.get('urls'))
     want_history = bool(args.get('history'))
     key = config.api_key()
@@ -700,7 +700,7 @@ def tool_explain_lcp(args, progress=None):
             {'type': 'text', 'text': json.dumps(payload, indent=2)}]
 
 
-def tool_compare(args, progress=None):
+def tool_compare_to_baseline(args, progress=None):
     """Measure now and say whether anything moved since the baseline.
 
     First call on a URL records the baseline and says so. That is the honest
@@ -769,11 +769,11 @@ def tool_compare(args, progress=None):
 
     label = (f"{', '.join(urls)} [{strategy}], compared over "
              f'{runs} distinct analyses')
-    return _run_or_defer('compare', label,
+    return _run_or_defer('compare_to_baseline', label,
                          _job_estimate(len(urls), runs), work, progress)
 
 
-def tool_check_status(args, progress=None):
+def tool_get_job_result(args, progress=None):
     """Collect a measurement that was too long to answer inside one call.
 
     Returns instantly, always. Whatever the caller's timeout is, this fits
@@ -790,7 +790,8 @@ def tool_check_status(args, progress=None):
             raise ToolError(
                 'No measurement on this server to report on: none has been '
                 'started, or the last one finished more than an hour ago and '
-                'was deleted. Start one with analyse_page or compare.')
+                'was deleted. Start one with analyse_page or '
+                'compare_to_baseline.')
 
     record = _job_read(job_id)
     if record is None:
@@ -831,11 +832,11 @@ def tool_check_status(args, progress=None):
              f"  {record.get('progress')}\n"
              f"  {record.get('done')} of {record.get('total')} distinct "
              'analyses collected so far.\n'
-             f'Roughly {_duration(remaining)} left. Call check_status again in '
+             f'Roughly {_duration(remaining)} left. Call get_job_result again in '
              'about 15 seconds.'}]
 
 
-def tool_diagnose(args, progress=None):
+def tool_check_setup(args, progress=None):
     """What is configured and what actually works, without disclosing the key."""
     key = config.api_key()
     lines = [f'pagespeed-insights-mcp {__version__}',
@@ -872,8 +873,8 @@ def tool_diagnose(args, progress=None):
     saved = config.default_urls()
     lines.append('Saved URLs: ' + (', '.join(saved) if saved else 'none'))
 
-    # Stale baselines are the quiet failure mode of compare: a comparison
-    # against something measured months ago looks exactly like one against
+    # Stale baselines are the quiet failure mode of compare_to_baseline: a
+    # comparison against something measured months ago looks exactly like one against
     # something measured this morning.
     baselines = config.load_baselines()
     if baselines:
@@ -883,7 +884,8 @@ def tool_diagnose(args, progress=None):
                          f"  recorded {entry.get('recorded') or 'unknown'}"
                          f", {entry.get('analyses')} analyses")
     else:
-        lines.append('Baselines: none. The first compare on a URL records one.')
+        lines.append('Baselines: none. The first compare_to_baseline on a URL '
+                     'records one.')
     return [{'type': 'text', 'text': '\n'.join(lines)}]
 
 
@@ -894,8 +896,8 @@ TOOLS = [
             'Use to measure a page in the lab and find what to fix (scores with '
             'their spread, failing audits ranked by what fixing them is worth, '
             'real-user data beside them, and a page to send on); for real-user '
-            'data alone use field_data, which is fast, and for "did that change '
-            'help" use compare. include picks the parts, "scores", "issues", '
+            'data alone use get_field_data, which is fast, and for "did that change '
+            'help" use compare_to_baseline. include picks the parts, "scores", "issues", '
             '"field_data" and "html", default all four. ONE MEASUREMENT SERVES '
             'EVERY PART, so asking for more costs no extra API calls, while '
             'asking in separate calls measures again. SLOW, several minutes. It '
@@ -910,7 +912,7 @@ TOOLS = [
             'seconds and asking harder will NOT speed it up. Reports fewer '
             'analyses honestly if time runs out. Anything that will not fit '
             'inside one tool call returns a JOB ID instead and keeps working: '
-            'collect it with check_status, polling about every 15 seconds. Only '
+            'collect it with get_job_result, polling about every 15 seconds. Only '
             'runs=1 on a single URL with include ["scores"] answers immediately, '
             'and runs=1 is the noisy single run you should not be quoting. '
             'ISSUES are Google\'s own audit findings and remediation text. Only a '
@@ -980,7 +982,7 @@ TOOLS = [
         'handler': tool_analyse_page,
     },
     {
-        'name': 'field_data',
+        'name': 'get_field_data',
         'description':
             'What real Chrome users actually experienced, from the Chrome UX '
             'Report — the only evidence here about real visitors, and the only '
@@ -999,7 +1001,7 @@ TOOLS = [
             },
             'additionalProperties': False,
         },
-        'handler': tool_field_data,
+        'handler': tool_get_field_data,
     },
     {
         'name': 'explain_lcp',
@@ -1029,7 +1031,7 @@ TOOLS = [
         'handler': tool_explain_lcp,
     },
     {
-        'name': 'compare',
+        'name': 'compare_to_baseline',
         'description':
             'Answer "did that change actually help". Measures now and compares '
             'against a saved baseline for the same URL and strategy. THE FIRST '
@@ -1046,7 +1048,7 @@ TOOLS = [
             'Lighthouse version change, which moves scores without the page '
             'moving. Does NOT compare field data, which is a 28-day window and '
             'cannot show a change made this week. SLOW, several minutes: it returns '
-            'a JOB ID and you collect the verdict with check_status.',
+            'a JOB ID and you collect the verdict with get_job_result.',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -1065,16 +1067,16 @@ TOOLS = [
             },
             'additionalProperties': False,
         },
-        'handler': tool_compare,
+        'handler': tool_compare_to_baseline,
     },
     {
-        'name': 'check_status',
+        'name': 'get_job_result',
         'description':
             'Collect a measurement that was handed back as a job. Anything '
             'longer than about a minute cannot be answered inside one tool '
             'call — clients enforce a hard wall-clock limit and progress '
-            'notifications do not extend it — so analyse_page and compare '
-            'return a job id and keep working. Call '
+            'notifications do not extend it — so analyse_page and '
+            'compare_to_baseline return a job id and keep working. Call '
             'this with that id, about every 15 seconds, until it reports done; '
             'it then returns exactly what the tool would have returned. '
             'ALWAYS answers immediately. Omit job_id for the most recent job. '
@@ -1091,10 +1093,10 @@ TOOLS = [
             },
             'additionalProperties': False,
         },
-        'handler': tool_check_status,
+        'handler': tool_get_job_result,
     },
     {
-        'name': 'diagnose',
+        'name': 'check_setup',
         'description':
             'Report what is configured and what actually works right now — key '
             'present, PageSpeed reachable, Chrome UX Report permitted — without '
@@ -1102,41 +1104,43 @@ TOOLS = [
             'from a slow or failing page before committing to a full check.',
         'inputSchema': {'type': 'object', 'properties': {},
                         'additionalProperties': False},
-        'handler': tool_diagnose,
+        'handler': tool_check_setup,
     },
 ]
 
 # ----------------------------------------------------------------------------
 # Tool annotations
 # ----------------------------------------------------------------------------
-# Three of these only ask Google questions. `analyse_page` can save the HTML page
-# to disk, and `compare` records a baseline on the first call for a URL — an
-# annotation describes the tool rather than the call, so the honest reading is
-# the one where the argument that makes it write was supplied. `compare` sat in
-# this set until 1.4.3, which contradicted its own description and told a
-# client it could run the tool without asking while it wrote state.
+# Three of these only ask Google questions. `analyse_page` can save the HTML
+# page to disk, and `compare_to_baseline` records a baseline on the first call
+# for a URL — an annotation describes the tool rather than the call, so the
+# honest reading is the one where the argument that makes it write was
+# supplied. `compare_to_baseline` (then `compare`) sat in this set until 1.4.3,
+# which contradicted its own description and told a client it could run the
+# tool without asking while it wrote state.
 #
-# check_status only reads job state. It prunes nothing and starts nothing;
+# get_job_result only reads job state. It prunes nothing and starts nothing;
 # expiry happens where a job is created, so a server nobody is using neither
 # writes nor deletes.
-_READ_ONLY = {'field_data', 'explain_lcp', 'check_status', 'diagnose'}
+_READ_ONLY = {'get_field_data', 'explain_lcp', 'get_job_result', 'check_setup'}
 
-# `analyse_page` destroys nothing: config.resolve_destination refuses to overwrite
-# and picks a free name instead, so saving twice leaves two files rather than
-# one file and a lost one. That also makes it not idempotent. `compare` with
-# save_baseline replaces the stored baseline in place, and the old one is gone
+# `analyse_page` destroys nothing: config.resolve_destination refuses to
+# overwrite and picks a free name instead, so saving twice leaves two files
+# rather than one file and a lost one. That also makes it not idempotent.
+# `compare_to_baseline` with save_baseline replaces the stored baseline in
+# place, and the old one is gone
 # — the one write here that discards something, so by the same
 # tool-not-the-call reading it is destructive.
-_DESTRUCTIVE = {'compare'}
+_DESTRUCTIVE = {'compare_to_baseline'}
 _IDEMPOTENT = set()
 
 TITLES = {
     'analyse_page': 'Analyse a page',
-    'field_data': 'Real-user field data',
+    'get_field_data': 'Real-user field data',
     'explain_lcp': 'Explain LCP',
-    'compare': 'Compare pages',
-    'check_status': 'Collect a running measurement',
-    'diagnose': 'Check configuration',
+    'compare_to_baseline': 'Compare to baseline',
+    'get_job_result': 'Collect a running measurement',
+    'check_setup': 'Check configuration',
 }
 
 
