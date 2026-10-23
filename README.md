@@ -192,14 +192,12 @@ path.
 
 | Tool | What it does |
 |---|---|
-| `report` | Everything in one call, and the one most people want. Scores with their spread, real-user data if Google has any, and what is failing ranked by what fixing it is worth. Returns a self-contained HTML page as well, to save or forward. Comes back as a job id. |
-| `check_pagespeed` | Scores only. Median of N distinct analyses with the spread. `urls`, `strategy` (mobile, desktop or both), `runs` (1-10, default 5). Anything past a single analysis comes back as a job id. |
-| `diagnose_page` | What is failing, ranked. Only reports a fault that failed in every analysis, because audits are as noisy as scores. Comes back as a job id. |
-| `field_data` | Real-user data from the Chrome UX Report. `urls`, and `history` for the weekly p75 series. |
+| `analyse_page` | Everything in one call, and the one most people want. Scores with their spread, what is failing ranked by what fixing it is worth, real-user data if Google has any, and a self-contained HTML page to save or forward. Only a fault that failed in every analysis counts, because audits are as noisy as scores. `include` picks the parts, `scores`, `issues`, `field_data` and `html`, if you don't want all four, and one measurement serves every part you ask for. Comes back as a job id. |
+| `get_field_data` | Real-user data from the Chrome UX Report. One call, answers at once. `urls`, and `history` for the weekly p75 series. |
 | `explain_lcp` | Which of four phases owns a slow Largest Contentful Paint: server response, the wait before the browser starts fetching the largest image, the download, then the wait before it is painted. One call, answers at once. |
-| `compare` | Did the change actually help. Measures now and compares against a saved baseline, giving a verdict only where the two ranges do not overlap. Comes back as a job id. |
-| `check_status` | Collects a measurement that was handed back as a job id. Answers immediately, every time. `job_id`, or nothing at all for the most recent one. |
-| `diagnose` | Whether the key works, whether the Chrome UX Report is reachable, and which baselines are held, without disclosing the key. |
+| `compare_to_baseline` | Did the change actually help. Measures now and compares against a saved baseline, giving a verdict only where the two ranges do not overlap. Comes back as a job id. |
+| `get_job_result` | Collects a measurement that was handed back as a job id. Answers immediately, every time. `job_id`, or nothing at all for the most recent one. |
+| `check_setup` | Whether the key works, whether the Chrome UX Report is reachable, and which baselines are held, without disclosing the key. |
 
 ### Measurements that outlive the call
 
@@ -214,23 +212,23 @@ can't fit inside it. Google re-analyses a URL about once a minute, so five
 distinct analyses take about 150 seconds, and asking harder doesn't help, it
 just hands you the same cached analysis five times.
 
-The work doesn't happen inside the call any more. `check_pagespeed`, `report`,
-`diagnose_page` and `compare` start the measurement, hand back a job id, and
-keep going. Your assistant collects it with `check_status`, every 15 seconds or
-so, and `check_status` always answers straight away. When the measurement
+The work doesn't happen inside the call any more. `analyse_page` and
+`compare_to_baseline` start the measurement, hand back a job id, and keep
+going. Your assistant collects it with `get_job_result`, every 15 seconds or
+so, and `get_job_result` always answers straight away. When the measurement
 lands it returns exactly what the tool would have returned, so nothing
 downstream can tell which route it took.
 
 You don't have to do anything. The assistant polls for you.
 
-One thing still answers on the spot, `check_pagespeed` with one URL and `runs`
-set to 1. That is a single analysis with no spread, which is the noisy one-run
+One measurement still answers on the spot, `analyse_page` with `include` set
+to `["scores"]`, one URL and `runs` set to 1. That is a single analysis with no spread, which is the noisy one-run
 number this whole package exists to refuse, and the output says so in as many
 words.
 
 A finished job sits there for an hour, in case you want to read it twice. A
 running one dies if the server restarts, which clients do once they have been
-idle a while, and `check_status` tells you that happened rather than leaving
+idle a while, and `get_job_result` tells you that happened rather than leaving
 you polling something that will never finish.
 
 If your client waits longer than 60 seconds, tell the server and it will do
@@ -252,7 +250,7 @@ site the LCP looks a comfortable 1.5 seconds, and the eighth of visits with an
 image LCP are waiting 3.3 seconds before the image so much as starts
 downloading. Nothing in the headline number shows that.
 
-`compare` answers the question the findings leave open, which is whether the
+`compare_to_baseline` answers the question the findings leave open, which is whether the
 change you made did anything. The first call on a URL records a baseline and
 compares nothing, because there is nothing to compare against yet. Make the
 change, call it again, and it measures afresh and reports what moved.
@@ -319,7 +317,7 @@ which is what stops a client giving up on it. If your assistant offers to use
 `runs=1` to be quicker, the answer is no, that is the thing this exists to
 stop.
 
-Start with `diagnose` if anything looks wrong. It separates a configuration
+Start with `check_setup` if anything looks wrong. It separates a configuration
 problem from a slow page in about 2 seconds.
 
 ## From a terminal
@@ -441,7 +439,7 @@ take it out.
 which is what a client does to a server that has been sitting idle. Start the
 measurement again and let the assistant keep polling while it runs.
 
-When you can't tell which of these you have, `diagnose` answers it. Whether the
+When you can't tell which of these you have, `check_setup` answers it. Whether the
 key works, whether the Chrome UX Report is reachable, and which baselines are
 held, none of it disclosing the key.
 
