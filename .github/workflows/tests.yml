@@ -22,7 +22,8 @@ jobs:
         # credential was what made this package installable there without a
         # compiled dependency, and a test run that never touches Windows would
         # let that quietly regress.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-latest moved to Ubuntu 26.04 (14 Nov 2026), which has no Python 3.9 build.
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
